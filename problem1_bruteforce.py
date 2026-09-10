@@ -372,6 +372,33 @@ def plot_cannot_cover_case(result):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     fig, ax = plt.subplots(figsize=(8.5, 8.5))
 
+    center_x = result.region.centroid.x
+    center_y = result.region.centroid.y
+    local_window = Polygon([
+        (center_x - 60.0, center_y - 60.0),
+        (center_x + 60.0, center_y - 60.0),
+        (center_x + 60.0, center_y + 60.0),
+        (center_x - 60.0, center_y + 60.0),
+    ])
+
+    sector_colors = ["#1f77b4", "#2ca02c", "#9467bd", "#e377c2", "#17becf"]
+    for index, (sensor_x, sensor_y, bearing) in enumerate(result.detections, start=1):
+        sector = sector_polygon(sensor_x, sensor_y, bearing, ANGLE_ERROR_DEG, RAY_LENGTH)
+        local_sector = sector.intersection(local_window)
+        if not local_sector.is_empty:
+            geometries = [local_sector] if local_sector.geom_type == "Polygon" else list(getattr(local_sector, "geoms", []))
+            for geometry in geometries:
+                if geometry.geom_type == "Polygon":
+                    sx, sy = geometry.exterior.xy
+                    ax.fill(
+                        sx,
+                        sy,
+                        color=sector_colors[(index - 1) % len(sector_colors)],
+                        alpha=0.14,
+                        label=f"S{index} 张角区域",
+                        zorder=1,
+                    )
+
     vx, vy = result.region.exterior.xy
     ax.add_patch(MplPolygon(
         list(zip(vx, vy)),
@@ -402,21 +429,30 @@ def plot_cannot_cover_case(result):
         edgecolor="darkorange",
         linewidth=1.0,
         label="直径圆",
-        zorder=7,
+        zorder=9,
     ))
     ax.add_patch(MplCircle(
         (result.min_circle[0], result.min_circle[1]),
         result.min_circle[2],
         fill=False,
         linestyle="-.",
-        edgecolor="green",
+        edgecolor="purple",
         linewidth=1.0,
         label="最小外接圆",
-        zorder=9,
+        zorder=10,
     ))
 
-    center_x = result.region.centroid.x
-    center_y = result.region.centroid.y
+    ax.scatter(
+        [result.endpoint_a[0], result.endpoint_b[0]],
+        [result.endpoint_a[1], result.endpoint_b[1]],
+        s=42,
+        color="black",
+        edgecolor="white",
+        linewidth=0.8,
+        zorder=11,
+        label="直径端点",
+    )
+
     ax.set_xlim(center_x - 60.0, center_x + 60.0)
     ax.set_ylim(center_y - 60.0, center_y + 60.0)
     ax.set_aspect("equal", adjustable="box")
@@ -425,7 +461,11 @@ def plot_cannot_cover_case(result):
     ax.set_ylabel("y / m")
     ax.set_title("图1：Rmin > d/2 的不可覆盖情况（局部放大）", fontsize=14, pad=12)
 
-    region_corner = max(result.vertices, key=lambda point: distance(point, (result.min_circle[0], result.min_circle[1])))
+    region_corner = max(
+        result.vertices,
+        key=lambda point: distance(point, (diameter_circle[0], diameter_circle[1])) - diameter_circle[2],
+    )
+    outside_gap = distance(region_corner, (diameter_circle[0], diameter_circle[1])) - diameter_circle[2]
     min_circle_label_point = (
         result.min_circle[0] + result.min_circle[2] / math.sqrt(2.0),
         result.min_circle[1] + result.min_circle[2] / math.sqrt(2.0),
@@ -439,11 +479,11 @@ def plot_cannot_cover_case(result):
         f"最小外接圆半径 Rmin = {result.min_circle[2]:.3f} m",
         xy=min_circle_label_point,
         xytext=(center_x - 54.0, center_y + 46.0),
-        arrowprops={"arrowstyle": "->", "color": "green", "linewidth": 1.8},
-        color="green",
+        arrowprops={"arrowstyle": "->", "color": "purple", "linewidth": 1.8},
+        color="purple",
         fontsize=10.5,
-        bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "edgecolor": "green", "alpha": 0.86},
-        zorder=10,
+        bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "edgecolor": "purple", "alpha": 0.88},
+        zorder=12,
     )
     ax.annotate(
         f"直径圆半径 d/2 = {diameter_circle[2]:.3f} m",
@@ -453,19 +493,19 @@ def plot_cannot_cover_case(result):
         color="darkorange",
         fontsize=10.5,
         bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "edgecolor": "darkorange", "alpha": 0.86},
-        zorder=10,
+        zorder=12,
     )
     ax.annotate(
-        "超出直径圆的区域角点",
+        f"该角点在直径圆外\n超出约 {outside_gap:.4f} m",
         xy=region_corner,
         xytext=(center_x + 9.0, center_y + 38.0),
         arrowprops={"arrowstyle": "->", "color": "black", "linewidth": 1.4},
         fontsize=9.5,
         bbox={"boxstyle": "round,pad=0.22", "facecolor": "white", "edgecolor": "black", "alpha": 0.82},
-        zorder=10,
+        zorder=12,
     )
 
-    ax.legend(loc="lower right", fontsize=8, framealpha=0.82)
+    ax.legend(loc="lower right", fontsize=7.2, framealpha=0.82, ncol=1)
     fig.savefig(VISUALIZATION_PATH, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
