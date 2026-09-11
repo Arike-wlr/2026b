@@ -120,6 +120,10 @@ def main() -> None:
           f"巡检边插入清除 {int(float(stats.get('survey_inserted_clears', 0.0)))} 次")
     print(f"已收敛频道跳过巡检复测 {int(float(stats.get('survey_localized_skips', 0.0)))} 次")
     print(f"收尾阶段动态融合复测 {int(float(stats.get('finish_shared_remeasures', 0.0)))} 次")
+    print(f"弱空频道：标记 {int(float(stats.get('weak_unknown_marked', 0.0)))} 个，"
+          f"巡检跳过 {int(float(stats.get('weak_unknown_survey_skips', 0.0)))} 次，"
+          f"收尾复核 {int(float(stats.get('weak_unknown_final_probes', 0.0)))} 次，"
+          f"复核找回 {int(float(stats.get('weak_unknown_recovered', 0.0)))} 个")
     print(f"定向遮挡导致的无信号：{summary['probe_no_signal_count']} 次（补测阶段）")
     print(f"网格兜底：{summary['grid_fallback_count']} 次，"
           f"最终可行域半径上界：{float(summary['max_final_radius_m']):.2f} m")
