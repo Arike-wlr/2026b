@@ -116,6 +116,7 @@ def main() -> None:
           f"补测 {int(float(stats['probes']))} 次")
     print(f"巡检途中复测 {int(float(stats.get('survey_remeasures', 0.0)))} 次，"
           f"巡检边插入清除 {int(float(stats.get('survey_inserted_clears', 0.0)))} 次")
+    print(f"已收敛频道跳过巡检复测 {int(float(stats.get('survey_localized_skips', 0.0)))} 次")
     print(f"定向遮挡导致的无信号：{summary['probe_no_signal_count']} 次（补测阶段）")
     print(f"网格兜底：{summary['grid_fallback_count']} 次，"
           f"最终可行域半径上界：{float(summary['max_final_radius_m']):.2f} m")

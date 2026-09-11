@@ -533,6 +533,202 @@ def generate_mixed_sources(
     ]
 
 
+# --------------------------------------------------------------------------- #
+# 手工测试用例：每个恰好 10 个源，全向/定向的搭配人工排定
+# --------------------------------------------------------------------------- #
+FIXED_CASE_SOURCE_COUNT = 10
+
+
+@dataclass(frozen=True)
+class FixedSourceSpec:
+    """手工用例里的一个源：坐标单位米，发射方向单位度（仅定向源需要）。"""
+
+    channel: int
+    x: float
+    y: float
+    receive_radius_m: float
+    directional: bool
+    emission_angle_deg: float | None = None
+
+
+@dataclass(frozen=True)
+class FixedCase:
+    case_id: int
+    name: str
+    note: str
+    seed: int
+    sources: tuple[FixedSourceSpec, ...]
+
+    @property
+    def directional_count(self) -> int:
+        return sum(source.directional for source in self.sources)
+
+
+def _omni(
+    channel: int, x: float, y: float, receive_radius_m: float
+) -> FixedSourceSpec:
+    return FixedSourceSpec(channel, x, y, receive_radius_m, False, None)
+
+
+def _dir(
+    channel: int,
+    x: float,
+    y: float,
+    receive_radius_m: float,
+    emission_angle_deg: float,
+) -> FixedSourceSpec:
+    return FixedSourceSpec(
+        channel, x, y, receive_radius_m, True, emission_angle_deg
+    )
+
+
+FIXED_CASES: tuple[FixedCase, ...] = (
+    FixedCase(
+        case_id=1,
+        name="随机混合A",
+        note="10 个源散布全盘，6 定向 / 4 全向，接收半径取中高值",
+        seed=101,
+        sources=(
+            _omni(2, 1200.0, 0.0, 1400.0),
+            _dir(5, 300.0, 1100.0, 1350.0, 40.0),
+            _dir(7, -900.0, 700.0, 1500.0, 200.0),
+            _omni(9, -1300.0, -300.0, 1200.0),
+            _dir(11, 200.0, -1400.0, 1450.0, 300.0),
+            _dir(13, 900.0, -600.0, 1000.0, 135.0),
+            _omni(15, -200.0, 300.0, 1100.0),
+            _dir(16, 1500.0, 400.0, 1050.0, 260.0),
+            _dir(18, -600.0, -1200.0, 1500.0, 75.0),
+            _omni(20, 50.0, 800.0, 1300.0),
+        ),
+    ),
+    FixedCase(
+        case_id=2,
+        name="随机混合B",
+        note="10 个源，4 定向 / 6 全向，含 3 个贴近外圈的源",
+        seed=102,
+        sources=(
+            _omni(1, 700.0, 1500.0, 1300.0),
+            _dir(3, -1500.0, 200.0, 1400.0, 190.0),
+            _omni(4, 400.0, -900.0, 1000.0),
+            _dir(6, -400.0, -1500.0, 1450.0, 10.0),
+            _omni(8, 1600.0, -500.0, 1200.0),
+            _dir(10, -800.0, -400.0, 1500.0, 95.0),
+            _omni(12, 250.0, 250.0, 1050.0),
+            _omni(14, -1100.0, 900.0, 1350.0),
+            _dir(17, 1000.0, 900.0, 1100.0, 250.0),
+            _omni(19, -150.0, -600.0, 1500.0),
+        ),
+    ),
+    FixedCase(
+        case_id=3,
+        name="全向基准",
+        note="10 个全向源，半径 1500 m 均布，作为无定向遮挡的对照基线",
+        seed=103,
+        sources=(
+            _omni(2, 1500.0, 0.0, 1500.0),
+            _omni(4, 1213.5, 881.7, 1500.0),
+            _omni(6, 463.5, 1426.6, 1500.0),
+            _omni(8, -463.5, 1426.6, 1500.0),
+            _omni(10, -1213.5, 881.7, 1500.0),
+            _omni(12, -1500.0, 0.0, 1500.0),
+            _omni(14, -1213.5, -881.7, 1500.0),
+            _omni(16, -463.5, -1426.6, 1500.0),
+            _omni(18, 463.5, -1426.6, 1500.0),
+            _omni(20, 1213.5, -881.7, 1500.0),
+        ),
+    ),
+    FixedCase(
+        case_id=4,
+        name="全定向",
+        note="10 个定向源，半径 900 m 环形、发射方向全部朝圆心、接收半径取最小值 1000 m",
+        seed=104,
+        sources=(
+            _dir(1, 855.9, 278.1, 1000.0, 198.0),
+            _dir(3, 529.0, 728.1, 1000.0, 234.0),
+            _dir(5, 0.0, 900.0, 1000.0, 270.0),
+            _dir(7, -529.0, 728.1, 1000.0, 306.0),
+            _dir(9, -855.9, 278.1, 1000.0, 342.0),
+            _dir(11, -855.9, -278.1, 1000.0, 18.0),
+            _dir(13, -529.0, -728.1, 1000.0, 54.0),
+            _dir(15, 0.0, -900.0, 1000.0, 90.0),
+            _dir(17, 529.0, -728.1, 1000.0, 126.0),
+            _dir(19, 855.9, -278.1, 1000.0, 162.0),
+        ),
+    ),
+    FixedCase(
+        case_id=5,
+        name="中心密集定向朝外",
+        note=(
+            "10 个源全部落在半径 620 m 内，7 定向（发射方向朝外，从外圈靠近必被遮挡）/ "
+            "3 全向；其中 1 个源正好在圆心，用于触发/验证 near 直接清除"
+        ),
+        seed=105,
+        sources=(
+            _dir(1, 500.0, 0.0, 1000.0, 0.0),
+            _dir(2, 400.0, 300.0, 1000.0, 37.0),
+            _omni(3, 250.0, 450.0, 1000.0),
+            _dir(4, -500.0, 100.0, 1050.0, 169.0),
+            _dir(5, -350.0, -400.0, 1000.0, 229.0),
+            _omni(6, 0.0, -550.0, 1100.0),
+            _dir(7, 150.0, -200.0, 1000.0, 307.0),
+            _omni(8, 0.0, 0.0, 1200.0),
+            _dir(9, 600.0, -150.0, 1000.0, 346.0),
+            _dir(10, -200.0, -100.0, 1000.0, 207.0),
+        ),
+    ),
+)
+
+
+def build_fixed_sources(case: FixedCase) -> list[MixedSource]:
+    """把手工用例转换成仿真源；用例写错（频道重复/越界等）立刻报错。"""
+    if len(case.sources) != FIXED_CASE_SOURCE_COUNT:
+        raise ValueError(
+            f"用例「{case.name}」必须恰好 {FIXED_CASE_SOURCE_COUNT} 个源，"
+            f"实际 {len(case.sources)} 个"
+        )
+    channels = [source.channel for source in case.sources]
+    if len(set(channels)) != len(channels):
+        raise ValueError(f"用例「{case.name}」存在重复频道 {channels}")
+    for source in case.sources:
+        if not CHANNEL_MIN <= source.channel <= CHANNEL_MAX:
+            raise ValueError(
+                f"用例「{case.name}」频道 {source.channel} 不在 "
+                f"{CHANNEL_MIN}..{CHANNEL_MAX}"
+            )
+        if math.hypot(source.x, source.y) > TARGET_RADIUS + 1e-9:
+            raise ValueError(
+                f"用例「{case.name}」频道 {source.channel} 落在半径 "
+                f"{TARGET_RADIUS} m 目标圆之外"
+            )
+        if not (
+            MIN_RECEIVE_RADIUS - 1e-9
+            <= source.receive_radius_m
+            <= MAX_RECEIVE_RADIUS + 1e-9
+        ):
+            raise ValueError(
+                f"用例「{case.name}」频道 {source.channel} 接收半径 "
+                f"{source.receive_radius_m} 不在 [1000, 1500]"
+            )
+        if source.directional != (source.emission_angle_deg is not None):
+            raise ValueError(
+                f"用例「{case.name}」频道 {source.channel} 的定向标志与发射方向不一致"
+            )
+    return [
+        MixedSource(
+            channel=source.channel,
+            position=np.array([source.x, source.y], dtype=float),
+            receive_radius=source.receive_radius_m,
+            directional=source.directional,
+            emission_angle_rad=(
+                None
+                if source.emission_angle_deg is None
+                else math.radians(source.emission_angle_deg)
+            ),
+        )
+        for source in case.sources
+    ]
+
+
 def directional_source_blocks(source, x: float, y: float) -> bool:
     """判断测点是否落在定向源的 90° 半圆之外（即被定向遮挡）。"""
     if not isinstance(source, MixedSource) or not source.directional:
@@ -649,6 +845,7 @@ class Problem4Strategy:
             "probes": 0.0,
             "survey_remeasures": 0.0,
             "survey_inserted_clears": 0.0,
+            "survey_localized_skips": 0.0,
         }
         self.survey_measurement_count = 0
         self.grid_fallback_count = 0
@@ -864,6 +1061,7 @@ class Problem4Strategy:
         polygon = self._polygon(channel)
         circle = minimum_enclosing_circle(polygon)
         if circle.radius <= SAFE_LOCALIZATION_RADIUS_M:
+            self.stats["survey_localized_skips"] += 1
             return False
         if distance_point_to_polygon(station, polygon) > MAX_RECEIVE_RADIUS + 1e-9:
             self.skipped_impossible_remeasure_count += 1
@@ -1057,6 +1255,7 @@ class Problem4Strategy:
 @dataclass
 class Problem4CaseResult:
     case_id: int
+    case_name: str
     seed: int
     directional_probability: float
     source_count: int
@@ -1084,6 +1283,7 @@ class Problem4CaseResult:
     skipped_impossible_remeasure_count: int
     survey_remeasure_count: float
     survey_inserted_clear_count: float
+    survey_localized_skip_count: float
 
 
 def run_problem4_case(
@@ -1093,11 +1293,47 @@ def run_problem4_case(
     force_mixed: bool = True,
     survey_detected_channels: bool = True,
 ) -> Problem4CaseResult:
+    """随机场景：源数 10~16，位置/接收半径/定向标志按题面假设随机生成。"""
     sources = generate_mixed_sources(
         seed,
         directional_probability=directional_probability,
         force_mixed=force_mixed,
     )
+    return _evaluate_case(
+        case_id=case_id,
+        case_name=f"随机 seed={seed}",
+        seed=seed,
+        sources=sources,
+        directional_probability=directional_probability,
+        survey_detected_channels=survey_detected_channels,
+    )
+
+
+def run_fixed_case(
+    case: FixedCase,
+    survey_detected_channels: bool = True,
+) -> Problem4CaseResult:
+    """手工用例：恰好 10 个源，全向/定向的搭配人工排定（见 ``FIXED_CASES``）。"""
+    sources = build_fixed_sources(case)
+    return _evaluate_case(
+        case_id=case.case_id,
+        case_name=case.name,
+        seed=case.seed,
+        sources=sources,
+        directional_probability=case.directional_count / len(sources),
+        survey_detected_channels=survey_detected_channels,
+    )
+
+
+def _evaluate_case(
+    case_id: int,
+    case_name: str,
+    seed: int,
+    sources: list[MixedSource],
+    directional_probability: float,
+    survey_detected_channels: bool = True,
+) -> Problem4CaseResult:
+    """在本地仿真器上跑一个给定场景，并做真值校验（漏检、定向判定假阳性）。"""
     simulator = DirectionalLocalSimulator(sources, error_seed=seed + 10_000)
     strategy = Problem4Strategy(
         simulator, survey_detected_channels=survey_detected_channels
@@ -1127,6 +1363,7 @@ def run_problem4_case(
     survey_time = float(summary["survey_time_s"])
     return Problem4CaseResult(
         case_id=case_id,
+        case_name=case_name,
         seed=seed,
         directional_probability=directional_probability,
         source_count=len(sources),
@@ -1159,6 +1396,7 @@ def run_problem4_case(
         ),
         survey_remeasure_count=float(stats["survey_remeasures"]),
         survey_inserted_clear_count=float(stats["survey_inserted_clears"]),
+        survey_localized_skip_count=float(stats["survey_localized_skips"]),
     )
 
 
@@ -1167,17 +1405,26 @@ def summarize_problem4(
     random_state: int,
     directional_probability: float,
     survey_detected_channels: bool,
+    strategy_name: str = "problem4_concentric_dodecagons",
 ) -> dict[str, object]:
     totals = np.array([result.total_time_s for result in results], dtype=float)
     source_counts = np.array(
         [result.source_count for result in results], dtype=float
     )
+    directional_counts = np.array(
+        [result.directional_count for result in results], dtype=float
+    )
+    total_directional = int(np.sum(directional_counts))
+    total_confirmed = int(
+        sum(result.confirmed_directional_count for result in results)
+    )
     # 单源定位清除时间 = 该案例总虚拟时间 / 该案例干扰源数
     per_source = totals / source_counts
     return {
-        "strategy": "problem4_concentric_dodecagons",
+        "strategy": strategy_name,
         "random_state": random_state,
         "case_count": len(results),
+        "case_names": [result.case_name for result in results],
         "directional_probability": directional_probability,
         "survey_detected_channels": survey_detected_channels,
         "survey_station_count": results[0].survey_station_count,
@@ -1190,29 +1437,20 @@ def summarize_problem4(
         ),
         "mean_source_count": float(np.mean(source_counts)),
         "total_source_count": int(np.sum(source_counts)),
-        "mean_directional_count": float(
-            np.mean([result.directional_count for result in results])
-        ),
+        "mean_directional_count": float(np.mean(directional_counts)),
         "mean_omnidirectional_count": float(
             np.mean([result.omnidirectional_count for result in results])
         ),
-        "total_directional_count": int(
-            sum(result.directional_count for result in results)
-        ),
+        "total_directional_count": total_directional,
         "total_omnidirectional_count": int(
             sum(result.omnidirectional_count for result in results)
         ),
         "mean_confirmed_directional_count": float(
-            np.mean(
-                [result.confirmed_directional_count for result in results]
-            )
+            np.mean([result.confirmed_directional_count for result in results])
         ),
         "directional_confirmation_rate": (
-            float(
-                sum(result.confirmed_directional_count for result in results)
-                / sum(result.directional_count for result in results)
-            )
-            if sum(result.directional_count for result in results) > 0
+            float(total_confirmed / total_directional)
+            if total_directional > 0
             else 0.0
         ),
         "average_seconds_per_source": float(
@@ -1277,6 +1515,9 @@ def summarize_problem4(
         "mean_survey_inserted_clear_count": float(
             np.mean([result.survey_inserted_clear_count for result in results])
         ),
+        "mean_survey_localized_skip_count": float(
+            np.mean([result.survey_localized_skip_count for result in results])
+        ),
         "assumptions": {
             "source_position": "半径为 1800 m 的圆域内按面积均匀、相互独立",
             "receive_radius_m": "在 [1000, 1500] 上独立均匀",
@@ -1311,6 +1552,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--directional-probability", type=float, default=0.5)
     parser.add_argument("--allow-pure", action="store_true")
     parser.add_argument(
+        "--fixed-cases",
+        action="store_true",
+        help="改为运行 FIXED_CASES 里的手工用例（每个恰好 10 个源）",
+    )
+    parser.add_argument(
         "--survey-unresolved-only",
         action="store_true",
         help="关闭巡检途中对已发现频道的顺路补测",
@@ -1325,13 +1571,50 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    survey_detected_channels = not args.survey_unresolved_only
+
+    if args.fixed_cases:
+        results = [
+            run_fixed_case(
+                case, survey_detected_channels=survey_detected_channels
+            )
+            for case in FIXED_CASES
+        ]
+        total_sources = sum(result.source_count for result in results)
+        summary = summarize_problem4(
+            results,
+            random_state=-1,
+            directional_probability=(
+                sum(result.directional_count for result in results)
+                / total_sources
+            ),
+            survey_detected_channels=survey_detected_channels,
+            strategy_name="problem4_fixed_cases",
+        )
+        write_problem4_results(results, summary, args.output_prefix)
+        for case, result in zip(FIXED_CASES, results, strict=True):
+            print(f"[{result.case_id}] {result.case_name}")
+            print(f"    说明：{case.note}")
+            print(
+                f"    源 {result.source_count}"
+                f"（定向 {result.directional_count} / "
+                f"全向 {result.omnidirectional_count}），"
+                f"清除 {result.cleared_count}/{result.source_count}，"
+                f"单源定位清除 {result.seconds_per_source:.1f} s，"
+                f"总虚拟时间 {result.total_time_s / 60.0:.2f} min，"
+                f"已确认定向 {result.confirmed_directional_count}，"
+                f"网格兜底 {result.grid_fallback_count}"
+            )
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
+
     results = [
         run_problem4_case(
             case_id=index + 1,
             seed=args.random_state + index,
             directional_probability=args.directional_probability,
             force_mixed=not args.allow_pure,
-            survey_detected_channels=not args.survey_unresolved_only,
+            survey_detected_channels=survey_detected_channels,
         )
         for index in range(args.cases)
     ]
@@ -1339,7 +1622,7 @@ def main() -> int:
         results,
         random_state=args.random_state,
         directional_probability=args.directional_probability,
-        survey_detected_channels=not args.survey_unresolved_only,
+        survey_detected_channels=survey_detected_channels,
     )
     write_problem4_results(results, summary, args.output_prefix)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
