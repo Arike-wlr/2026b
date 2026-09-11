@@ -309,6 +309,46 @@ def concentric_dodecagon_stations(
     return [(0.0, 0.0)] + inner + outer
 
 
+def source_orientation_coverage_gap(
+    stations: list[Point],
+    radii: np.ndarray | None = None,
+    angles: np.ndarray | None = None,
+) -> float:
+    """巡检点集的"(G, e) 认证空隙"最大值；≤ 180° ⇔ 任意位置 + 任意发射方向必被检出。
+
+    对目标圆域内的每个位置 G，只有距 G 不超过最小接收半径（1000 m）的测点才可能收到
+    信号，而每个这样的测点在 G 处张成 ±90° 的可视方向区间；整圈方向都被覆盖 ⇔ 这些
+    方向的最大空隙不超过 180°。
+
+    这正是"空频道证书"的判据：若某频道在巡检点集上都收不到信号，就必须保证不存在任何
+    被漏掉的 (G, e)。迁移自 q3 的认证思想（那里用实际覆盖地图，这里换成正向遮挡判据）。
+    """
+    if radii is None:
+        radii = np.linspace(0.0, TARGET_RADIUS, 37)
+    if angles is None:
+        angles = np.linspace(0.0, 2.0 * math.pi, 73, endpoint=False)
+    worst = 0.0
+    for radius in radii:
+        for angle in angles:
+            gx = float(radius * math.cos(angle))
+            gy = float(radius * math.sin(angle))
+            directions = sorted(
+                math.degrees(math.atan2(point[1] - gy, point[0] - gx)) % 360.0
+                for point in stations
+                if math.hypot(point[0] - gx, point[1] - gy)
+                <= MIN_RECEIVE_RADIUS + 1e-9
+            )
+            if not directions:
+                return math.inf
+            gap = max(
+                (directions[(index + 1) % len(directions)] - directions[index])
+                % 360.0
+                for index in range(len(directions))
+            )
+            worst = max(worst, gap)
+    return worst
+
+
 def concentric_dodecagon_route(
     inner_radius_m: float | None = None,
     outer_radius_m: float | None = None,
@@ -651,6 +691,13 @@ class Problem4Strategy:
     LOW_DENSITY_SURVEY_EDGE_DETOUR_M = 500.0
     LOW_DENSITY_DETECTED_LIMIT = 10
     MIN_SURVEY_CROSSING_ANGLE_DEG = 25.0
+    # 迁移自 q3_empty_channel_strategy 的三个判据（都只作用于"可选动作"，不影响完备性）：
+    # 1) 边际收益：顺路复测只在"预期少跑的距离/5 - 本次花费 > 余量"时才做；
+    # 2) completes 例外：若这一次测向就能把可行域压到可直接清除，无条件下做；
+    # 3) 自适应放宽：已确认源数达到阈值后 latch 一次，把余量放低（越到后面专程跑越贵）。
+    MARGINAL_REMEASURE_MARGIN_S = 2.0
+    MARGINAL_REMEASURE_MARGIN_RELAXED_S = 0.0
+    RESUME_REMEASURE_AT_KNOWN_SOURCES = 8
     WEAK_UNKNOWN_MIN_NO_SIGNAL_POINTS = 15
     WEAK_UNKNOWN_MIN_ANGLE_COVERAGE_DEG = 350.0
     WEAK_UNKNOWN_FINAL_PROBES = 3
@@ -724,7 +771,11 @@ class Problem4Strategy:
             "weak_unknown_survey_skips": 0.0,
             "weak_unknown_final_probes": 0.0,
             "weak_unknown_recovered": 0.0,
+            "survey_remeasure_value_skips": 0.0,
+            "survey_remeasure_completes": 0.0,
         }
+        # 自适应放宽的 latch（q3 adaptive_resume 的同一机制）
+        self._remeasure_margin_relaxed = False
         self.survey_measurement_count = 0
         self.survey_visited_station_count = 0
         self.grid_fallback_count = 0
@@ -1070,7 +1121,63 @@ class Problem4Strategy:
             < self.MIN_SURVEY_CROSSING_ANGLE_DEG
         ):
             return False
-        return True
+        return self._survey_remeasure_is_worthwhile(channel, station, circle)
+
+    # ---------------------------------------------------------- 顺路复测的价值
+    def _hypothetical_circle_after_measure(
+        self, channel: int, station: Point, circle: Circle
+    ) -> Circle:
+        """假设该频道在 ``station`` 测到指向当前可行域中心的示向度后的最小包围圆。
+
+        这是 q3 里 ``hypothetical[channel] = remaining.difference(disk)`` 的第四问版本：
+        定向遮挡下 ``no_signal`` 不提供几何约束，所以只能对"测到方向"这一情形做假设，
+        用可行域大小的变化量当作顺路复测的收益来源。
+        """
+        center = circle.center
+        bearing_deg = math.degrees(
+            math.atan2(center[1] - station[1], center[0] - station[0])
+        )
+        hypothetical = list(self.observations[channel])
+        hypothetical.append(
+            DirectionObservation(
+                (float(station[0]), float(station[1])), bearing_deg
+            )
+        )
+        return minimum_enclosing_circle(feasible_polygon(hypothetical))
+
+    def _survey_remeasure_margin_s(self) -> float:
+        """顺路复测要求的最小净收益（秒）；已知源数达标后 latch 放宽一次。"""
+        if self._remeasure_margin_relaxed:
+            return self.MARGINAL_REMEASURE_MARGIN_RELAXED_S
+        if len(self.detected) >= self.RESUME_REMEASURE_AT_KNOWN_SOURCES:
+            self._remeasure_margin_relaxed = True
+            return self.MARGINAL_REMEASURE_MARGIN_RELAXED_S
+        return self.MARGINAL_REMEASURE_MARGIN_S
+
+    def _survey_remeasure_is_worthwhile(
+        self, channel: int, station: Point, circle: Circle
+    ) -> bool:
+        """q3 ``_marginal_scan`` 的迁移：只在重算后的计划确实更便宜时才顺路补测。
+
+        * ``completes`` 例外：这一次测向就能把可行域压到可直接清除（半径 ≤ 58 m），
+          等价于 q3 的 ``always_finish_channel``，无条件做；
+        * 否则按"预期少跑的专程距离 ÷ 5 m/s − 本次检测与切换耗时 > 余量"判定，
+          余量在已确认源数达标后由 latch 放宽（越到后面专程跑一趟越贵）。
+        """
+        immediate_s = MEASURE_TIME_S
+        if self.robot.current_channel not in (None, channel):
+            immediate_s += SWITCH_TIME_S
+        hypothesized = self._hypothetical_circle_after_measure(
+            channel, station, circle
+        )
+        if hypothesized.radius <= SAFE_LOCALIZATION_RADIUS_M:
+            self.stats["survey_remeasure_completes"] += 1
+            return True
+        saved_s = (circle.radius - hypothesized.radius) / MOVE_SPEED_MPS
+        if saved_s - immediate_s > self._survey_remeasure_margin_s():
+            return True
+        self.stats["survey_remeasure_value_skips"] += 1
+        return False
 
     def _maximum_crossing_angle(
         self, channel: int, point: Point, circle: Circle
@@ -1121,6 +1228,9 @@ class Problem4Strategy:
                 continue
             angle = self._maximum_crossing_angle(channel, point, circle)
             if angle < self.MIN_SURVEY_CROSSING_ANGLE_DEG:
+                continue
+            # 与巡检途中同一套价值判据（q3 marginal_scan）：收益不够就不顺路测
+            if not self._survey_remeasure_is_worthwhile(channel, point, circle):
                 continue
             candidates.append((-angle, channel, circle))
 

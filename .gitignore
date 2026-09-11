@@ -4,3 +4,5 @@ Jammers-simulator/
 __pycache__/
 logs/
 q3_logs/
+research/
+outputs/

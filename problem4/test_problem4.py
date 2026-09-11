@@ -25,6 +25,7 @@ import math
 import os
 import sys
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -62,7 +63,9 @@ from problem4_directional_simulation import (  # noqa: E402
     concentric_dodecagon_stations,
     feasible_polygon,
     generate_mixed_sources,
+    minimum_enclosing_circle,
     run_problem4_case,
+    source_orientation_coverage_gap,
 )
 
 # 端到端随机场景：每个案例恰好 10 个源
@@ -231,6 +234,32 @@ class TestSurveyPlan(unittest.TestCase):
             sorted(route), sorted(concentric_dodecagon_stations())
         )
 
+    def test_plan_certifies_any_orientation(self) -> None:
+        # 25 点方案对"任意位置 + 任意发射方向"的认证空隙必须不超过 180°
+        self.assertLessEqual(
+            source_orientation_coverage_gap(self.stations), 180.0 + 1e-6
+        )
+
+    def test_every_station_is_necessary(self) -> None:
+        """负结果：删掉任何一个巡检点都会破坏认证，即"最小可认证子集"就是全部 25 点。
+
+        迁移自 q3 的 minimum certifying subset 思想——在第四问（定向遮挡下
+        no_signal 不能当距离约束用）这个思想拿不到收益，本测试把结论钉死，
+        同时也解释了为什么空频道证书必须付出 25 站 × 每空频道一次的检测代价。
+        """
+        coarse_radii = np.linspace(0.0, TARGET_RADIUS, 19)
+        coarse_angles = np.linspace(0.0, 2.0 * math.pi, 37, endpoint=False)
+        for index in range(len(self.stations)):
+            reduced = self.stations[:index] + self.stations[index + 1 :]
+            gap = source_orientation_coverage_gap(
+                reduced, coarse_radii, coarse_angles
+            )
+            self.assertGreater(
+                gap,
+                180.0 + 1e-6,
+                f"删掉第 {index} 个巡检点后仍可认证，说明 25 点不是最小集",
+            )
+
 
 # --------------------------------------------------------------------------- #
 # 2. 定向源的物理语义
@@ -333,6 +362,72 @@ class TestDirectionalSemantics(unittest.TestCase):
         strategy.observations[2] = [DirectionObservation((0.0, 0.0), 0.0)]
         strategy._certify_directional(2, (-200.0, 0.0))  # noqa: SLF001
         self.assertNotIn(2, strategy.certified_directional)
+
+
+# --------------------------------------------------------------------------- #
+# 2b. 顺路复测的价值判据（迁移自 q3_empty_channel_strategy 的 marginal_scan）
+# --------------------------------------------------------------------------- #
+class TestMarginalSurveyDecisions(unittest.TestCase):
+    """边际收益判据 / completes 例外 / 自适应放宽（latch）三条规则。"""
+
+    def _strategy_with_wedge(self, bearing_deg: float = 30.0):
+        strategy = Problem4Strategy(make_simulator([]))
+        strategy.observations[1] = [DirectionObservation((0.0, 0.0), bearing_deg)]
+        circle = minimum_enclosing_circle(feasible_polygon(strategy.observations[1]))
+        return strategy, circle
+
+    def test_marginal_rule_rejects_low_value_remeasure(self) -> None:
+        # 侧向 1200 m 的一次测向能明显缩小可行域 → 默认余量下判为值得；
+        # 把余量抬到不可能达到的值 → 判为不值得并计数（q3 的 margin 语义）
+        strategy, circle = self._strategy_with_wedge()
+        station = (1200.0, 900.0)
+        self.assertTrue(strategy._survey_remeasure_is_worthwhile(1, station, circle))
+        with mock.patch.object(
+            Problem4Strategy, "MARGINAL_REMEASURE_MARGIN_S", 1.0e9
+        ):
+            strategy._remeasure_margin_relaxed = False
+            self.assertFalse(
+                strategy._survey_remeasure_is_worthwhile(1, station, circle)
+            )
+        self.assertGreaterEqual(strategy.stats["survey_remeasure_value_skips"], 1.0)
+
+    def test_completes_exception_bypasses_margin(self) -> None:
+        # 一次测向就能把可行域压到可直接清除 → 无条件做（q3 always_finish_channel）
+        strategy, circle = self._strategy_with_wedge(bearing_deg=0.0)
+        station = (300.0, 1000.0)
+        hypothesized = strategy._hypothetical_circle_after_measure(1, station, circle)
+        self.assertLessEqual(hypothesized.radius, SAFE_LOCALIZATION_RADIUS_M)
+        with mock.patch.object(
+            Problem4Strategy, "MARGINAL_REMEASURE_MARGIN_S", 1.0e9
+        ):
+            strategy._remeasure_margin_relaxed = False
+            self.assertTrue(
+                strategy._survey_remeasure_is_worthwhile(1, station, circle)
+            )
+        self.assertGreaterEqual(strategy.stats["survey_remeasure_completes"], 1.0)
+
+    def test_adaptive_resume_latches_after_known_sources(self) -> None:
+        # 已确认源数不足时用严格余量；达标后放宽一次并 latch（q3 adaptive resume）
+        strategy, _ = self._strategy_with_wedge()
+        strategy.detected.update({2, 3, 4, 5, 6, 7, 8})
+        self.assertLess(
+            len(strategy.detected), strategy.RESUME_REMEASURE_AT_KNOWN_SOURCES
+        )
+        self.assertEqual(
+            strategy._survey_remeasure_margin_s(),
+            strategy.MARGINAL_REMEASURE_MARGIN_S,
+        )
+        strategy.detected.add(9)
+        self.assertEqual(
+            strategy._survey_remeasure_margin_s(),
+            strategy.MARGINAL_REMEASURE_MARGIN_RELAXED_S,
+        )
+        self.assertTrue(strategy._remeasure_margin_relaxed)
+        strategy.detected.clear()
+        self.assertEqual(
+            strategy._survey_remeasure_margin_s(),
+            strategy.MARGINAL_REMEASURE_MARGIN_RELAXED_S,
+        )
 
 
 # --------------------------------------------------------------------------- #
