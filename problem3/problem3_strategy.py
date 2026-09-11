@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 import os
+from itertools import combinations
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
@@ -31,6 +32,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 import numpy as np
 
 from problem3_geometry import (
+    clip_halfplane,
     clip_wedge,
     circumscribed_polygon,
     farthest_pair,
@@ -80,6 +82,7 @@ PROBE_STAGNATION_LIMIT = 3      # 连续多少次补测未缩小可行域就转�
 PROBE_MAX_PER_CHANNEL = 12      # 单频道补测次数上限
 REGION_CLUSTER_DISTANCE = 150.0  # 可行域中心小于该距离则归为同一空间批次
 OPPORTUNISTIC_MAX_DETOUR = 120.0  # 顺路清除允许增加的最大路程 m
+TSP_EXACT_LIMIT = 9          # Held-Karp 精确开放路径的节点上限
 
 STATUS_UNKNOWN = "UNKNOWN"
 STATUS_DETECTED = "DETECTED"
@@ -216,6 +219,8 @@ class Problem3Strategy:
             "probes": 0, "grid_clears": 0,
             "two_clear_used": 0, "grid_channels": 0,
             "clusters": 0, "opportunistic_strikes": 0,
+            "shared_measures": 0,
+            "empty_pruned": 0, "survey_skipped_empty": 0,
         }
 
     # -------------------------------------------------------------- 运行入口
@@ -321,8 +326,23 @@ class Problem3Strategy:
         self._recompute_enclosing(cs)
 
     def _update_no_signal(self, cs: ChannelState, S: np.ndarray) -> None:
-        """no_signal：保守排除盘(S,1000)（只记录）。"""
+        """no_signal：记录排除盘；若此前有信号点，则加入保守线性半平面。"""
         cs.exclusions.append((float(S[0]), float(S[1]), MIN_RECEIVE_RADIUS))
+        if cs.feasible is not None and cs.first_direction is not None:
+            signal_point, _ = cs.first_direction
+            q = np.asarray(S, dtype=float)
+            p = np.asarray(signal_point, dtype=float)
+            direction = q - p
+            # 由 |G-p| <= rc < |G-q| 得 2G·(q-p) <= |q|^2 - |p|^2。
+            # clip_halfplane 形式是 a*x+b*y+c >= 0，故整体取负。
+            rhs = float(np.dot(q, q) - np.dot(p, p))
+            cs.feasible = clip_halfplane(
+                cs.feasible,
+                -2.0 * float(direction[0]),
+                -2.0 * float(direction[1]),
+                rhs,
+            )
+            self._recompute_enclosing(cs)
 
     def _update_clear_failure(self, cs: ChannelState, C: np.ndarray) -> None:
         cs.exclusions.append((float(C[0]), float(C[1]), CLEAR_RADIUS))
@@ -342,6 +362,49 @@ class Problem3Strategy:
             return list(range(CHANNEL_MIN, CHANNEL_MAX + 1))
         return list(range(CHANNEL_MAX, CHANNEL_MIN - 1, -1))
 
+    def _known_source_count(self) -> int:
+        """已确认存在过干扰源的频道数：DETECTED + CLEARED。"""
+        return sum(
+            1 for cs in self.channels.values()
+            if cs.status in (STATUS_DETECTED, STATUS_CLEARED)
+        )
+
+    def _mark_empty(self, cs: ChannelState, note: str) -> None:
+        if cs.status == STATUS_UNKNOWN:
+            cs.status = STATUS_EMPTY
+            self.stats["empty_pruned"] += 1
+            self._log("PRUNE", "mark_empty", self.robot.current_position[0],
+                      self.robot.current_position[1], cs.channel,
+                      result="empty", cs=cs, note=note)
+
+    def _certify_empty_channels(self, stations_count: int) -> None:
+        """只执行确定性安全的空频道判定。
+
+        1. 频道完成全部七点检测仍未发现，则由七点覆盖定理判空；
+        2. 已确认存在的频道数达到题面上限 16，则剩余 UNKNOWN 频道必为空。
+        """
+        all_station_ids = set(range(stations_count))
+        for cs in self.channels.values():
+            if cs.status == STATUS_UNKNOWN and cs.completed_points == all_station_ids:
+                self._mark_empty(cs, "all survey stations no_signal")
+
+        if self._known_source_count() >= SOURCE_COUNT_MAX:
+            for cs in self.channels.values():
+                if cs.status == STATUS_UNKNOWN:
+                    self._mark_empty(cs, "source upper bound reached")
+
+    def _should_skip_survey_channel(self, cs: ChannelState,
+                                    stations_count: int) -> bool:
+        self._certify_empty_channels(stations_count)
+        if cs.status in (STATUS_CLEARED, STATUS_EMPTY):
+            self.stats["survey_skipped_empty"] += 1
+            return True
+        if self._known_source_count() >= SOURCE_COUNT_MAX and cs.status == STATUS_UNKNOWN:
+            self._mark_empty(cs, "source upper bound reached")
+            self.stats["survey_skipped_empty"] += 1
+            return True
+        return False
+
     def _phase_survey(self) -> None:
         stations = build_survey_points(self.cfg.survey_radius)
         for station_id, pos in enumerate(stations):
@@ -351,7 +414,7 @@ class Problem3Strategy:
                 break
             for channel in self._channel_order(station_id):
                 cs = self.channels[channel]
-                if cs.status == STATUS_CLEARED:
+                if self._should_skip_survey_channel(cs, len(stations)):
                     continue
                 if not self._time_left():
                     break
@@ -378,11 +441,9 @@ class Problem3Strategy:
                 else:
                     self._update_no_signal(cs, pos)
 
-        # 完成空频道证书
-        for cs in self.channels.values():
-            if cs.status == STATUS_UNKNOWN:
-                if cs.completed_points == set(range(len(stations))):
-                    cs.status = STATUS_EMPTY
+                self._certify_empty_channels(len(stations))
+
+        self._certify_empty_channels(len(stations))
 
     # ---------------------------------------------------------------- 阶段B
     def _detected_pending(self) -> List[ChannelState]:
@@ -543,9 +604,12 @@ class Problem3Strategy:
         return max(0.0, distance_cost - 0.65 * bonus)
 
     def _tsp_task_order(self, tasks: List[RouteTask]) -> List[int]:
-        """带顺路收益的最近邻 TSP；动态重规划时只执行首个任务。"""
+        """带顺路收益的开放 TSP；小任务集用 Held-Karp 精确求解。"""
         if not tasks:
             return []
+        if len(tasks) <= TSP_EXACT_LIMIT:
+            return self._held_karp_task_order(tasks)
+
         remaining = set(range(len(tasks)))
         order: List[int] = []
         current = np.asarray(self.robot.current_position, dtype=float)
@@ -563,7 +627,53 @@ class Problem3Strategy:
             order.append(best_idx)
             remaining.remove(best_idx)
             current = np.asarray(tasks[best_idx].point, dtype=float)
-        return order
+        points = [task.point for task in tasks]
+        return two_opt_open(order, self.robot.current_position, points)
+
+    def _held_karp_task_order(self, tasks: List[RouteTask]) -> List[int]:
+        n = len(tasks)
+        if n == 0:
+            return []
+        start = np.asarray(self.robot.current_position, dtype=float)
+        ready_clear_points = self._ready_clear_points(tasks)
+        points = [np.asarray(task.point, dtype=float) for task in tasks]
+
+        dp: Dict[Tuple[int, int], Tuple[float, Optional[int]]] = {}
+        for j in range(n):
+            mask = 1 << j
+            dp[(mask, j)] = (self._edge_cost(start, points[j], ready_clear_points), None)
+
+        for size in range(2, n + 1):
+            for subset in combinations(range(n), size):
+                mask = 0
+                for item in subset:
+                    mask |= 1 << item
+                for j in subset:
+                    prev_mask = mask ^ (1 << j)
+                    best_cost = float("inf")
+                    best_prev = None
+                    for i in subset:
+                        if i == j:
+                            continue
+                        prev_cost = dp[(prev_mask, i)][0]
+                        cost = prev_cost + self._edge_cost(points[i], points[j], ready_clear_points)
+                        if cost < best_cost:
+                            best_cost = cost
+                            best_prev = i
+                    dp[(mask, j)] = (best_cost, best_prev)
+
+        full_mask = (1 << n) - 1
+        end = min(range(n), key=lambda j: dp[(full_mask, j)][0])
+        route: List[int] = []
+        mask = full_mask
+        current = end
+        while current is not None:
+            route.append(current)
+            _, prev = dp[(mask, current)]
+            mask ^= 1 << current
+            current = prev
+        route.reverse()
+        return route
 
     def _execute_route_task(self, task: RouteTask) -> None:
         cs = task.channel_state
@@ -573,10 +683,69 @@ class Problem3Strategy:
 
         if task.kind == "localize":
             self._execute_probe(cs, task.point, task.note)
+            self._shared_measure_at(task.point, exclude_channel=cs.channel)
         elif task.kind == "clear":
             self._clear_step(cs)
         else:
             self._grid_clear_step(cs)
+
+    def _max_vertex_distance(self, point: np.ndarray, poly: np.ndarray) -> float:
+        if poly is None or len(poly) == 0:
+            return float("inf")
+        diff = poly - point
+        return float(np.max(np.hypot(diff[:, 0], diff[:, 1])))
+
+    def _estimated_intersection_angle_deg(self, point: np.ndarray,
+                                          cs: ChannelState) -> float:
+        if cs.first_direction is None or cs.center is None:
+            return 0.0
+        _, old_u = cs.first_direction
+        new_vec = np.asarray(cs.center, dtype=float) - point
+        norm = float(np.linalg.norm(new_vec))
+        if norm < 1e-9:
+            return 90.0
+        new_u = new_vec / norm
+        dot = abs(float(np.dot(old_u, new_u)))
+        dot = max(-1.0, min(1.0, dot))
+        return math.degrees(math.acos(dot))
+
+    def _shared_measure_at(self, point: np.ndarray,
+                           exclude_channel: Optional[int] = None) -> None:
+        candidates: List[Tuple[float, ChannelState]] = []
+        for cs in self._detected_pending():
+            if cs.channel == exclude_channel or cs.status == STATUS_CLEARED:
+                continue
+            if cs.feasible is None or cs.radius is None:
+                continue
+            if cs.radius <= self.cfg.safe_region_radius or cs.grid_mode:
+                continue
+            if self._max_vertex_distance(point, cs.feasible) > 999.0:
+                continue
+            angle = self._estimated_intersection_angle_deg(point, cs)
+            if angle < 20.0:
+                continue
+            candidates.append((-angle, cs))
+
+        candidates.sort(key=lambda item: (item[0], item[1].channel))
+        for _, cs in candidates[:2]:
+            if not self._time_left() or cs.status == STATUS_CLEARED:
+                break
+            res = self._measure(float(point[0]), float(point[1]), cs.channel,
+                                phase="SHARED", cs=cs,
+                                note="shared measure at same stop")
+            self.stats["shared_measures"] += 1
+            if res.result == "near":
+                self._update_near(cs, point)
+                clear_res = self._clear(float(point[0]), float(point[1]), cs.channel,
+                                        phase="SHARED", cs=cs,
+                                        note="shared near")
+                if clear_res.cleared:
+                    self._mark_cleared(cs)
+            elif res.result == "direction":
+                self._update_direction(cs, point, float(res.svd_deg))
+            else:
+                # 理论上 max vertex <=999 时不会无信号；若模拟器返回了，仍做保守更新。
+                self._update_no_signal(cs, point)
 
     def _build_q2_probe_plan(self, cs: ChannelState,
                              robot_pos: np.ndarray) -> List[np.ndarray]:

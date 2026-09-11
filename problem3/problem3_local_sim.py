@@ -331,6 +331,10 @@ def run_batch(cases: int, seed: int, verbose_every: int = 0,
         "avg_switches": mean("switch_count"),
         "avg_probes": mean("probes"),
         "avg_grid_clears": mean("grid_clears"),
+        "avg_shared_measures": mean("shared_measures"),
+        "avg_opportunistic": mean("opportunistic_strikes"),
+        "avg_empty_pruned": mean("empty_pruned"),
+        "avg_survey_skipped_empty": mean("survey_skipped_empty"),
         "results": results,
     }
     return report
@@ -367,6 +371,10 @@ def write_report(report: Dict[str, object], path: str) -> None:
         f"| 检测次数 | {float(report['avg_measures']):.1f} |",
         f"| 切频次数 | {float(report['avg_switches']):.1f} |",
         f"| 补测次数 | {float(report['avg_probes']):.1f} |",
+        f"| 共享测向次数 | {float(report['avg_shared_measures']):.1f} |",
+        f"| 顺路清除次数 | {float(report['avg_opportunistic']):.1f} |",
+        f"| 空频道剪枝数 | {float(report['avg_empty_pruned']):.1f} |",
+        f"| 巡检跳过空/已清频道次数 | {float(report['avg_survey_skipped_empty']):.1f} |",
         f"| 网格兜底清除次数 | {float(report['avg_grid_clears']):.1f} |",
         "",
     ]
