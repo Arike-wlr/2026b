@@ -387,6 +387,11 @@ def write_report(report: Dict[str, object], path: str) -> None:
         "该判断只收缩已被几何约束证明的可行域，不排除任何仍可能存在干扰源的位置，",
         "因此不损失最优性。",
         "",
+        "动态融合策略把补测、清除和网格兜底后的当前位置都视为候选共享测向点：",
+        "若另一频道的整个可行域均落在当前位置 999 m 接收半径内，且新旧测向夹角足够大，",
+        "则在不增加移动距离的情况下顺带完成一次有效交会测向。",
+        "该策略只增加被几何条件保证有效的测量，不改变任何可行域外推假设。",
+        "",
     ]
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:

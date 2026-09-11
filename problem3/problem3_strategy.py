@@ -669,15 +669,18 @@ class Problem3Strategy:
         cs = task.channel_state
         self._opportunistic_strike(task.point, exclude_channel=cs.channel)
         if cs.status == STATUS_CLEARED:
+            self._shared_measure_at(np.asarray(self.robot.current_position, dtype=float),
+                                    exclude_channel=cs.channel)
             return
 
         if task.kind == "localize":
             self._execute_probe(cs, task.point, task.note)
-            self._shared_measure_at(task.point, exclude_channel=cs.channel)
         elif task.kind == "clear":
             self._clear_step(cs)
         else:
             self._grid_clear_step(cs)
+        self._shared_measure_at(np.asarray(self.robot.current_position, dtype=float),
+                                exclude_channel=cs.channel)
 
     def _max_vertex_distance(self, point: np.ndarray, poly: np.ndarray) -> float:
         if poly is None or len(poly) == 0:
