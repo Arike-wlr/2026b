@@ -168,6 +168,14 @@ class StrategyConfig:
     opportunistic_enabled: bool = True
 
 
+@dataclass
+class RouteTask:
+    kind: str
+    point: np.ndarray
+    channel_state: ChannelState
+    note: str = ""
+
+
 # --------------------------------------------------------------------------- #
 # 七点巡检点
 # --------------------------------------------------------------------------- #
@@ -210,8 +218,7 @@ class Problem3Strategy:
         self._enter()
         try:
             self._phase_survey()
-            self._phase_localize()
-            self._phase_clear()
+            self._phase_tsp_routing()
         finally:
             self._exit()
         return self._summary()
@@ -390,38 +397,7 @@ class Problem3Strategy:
         centers = [self._state_center(cs) for cs in cluster]
         return np.mean(np.vstack(centers), axis=0)
 
-    def _cluster_channel_states(self, states: List[ChannelState]) -> List[List[ChannelState]]:
-        """Region Clustering：按当前可行域中心做贪心空间聚类。"""
-        clusters: List[List[ChannelState]] = []
-        ordered = sorted(states, key=lambda item: item.channel)
-        for cs in ordered:
-            center = self._state_center(cs)
-            best_index = None
-            best_distance = float("inf")
-            for index, cluster in enumerate(clusters):
-                cluster_center = self._cluster_center(cluster)
-                current_distance = math.hypot(
-                    center[0] - cluster_center[0],
-                    center[1] - cluster_center[1],
-                )
-                if current_distance < best_distance:
-                    best_distance = current_distance
-                    best_index = index
-            if best_index is not None and best_distance <= self.cfg.region_cluster_distance:
-                clusters[best_index].append(cs)
-            else:
-                clusters.append([cs])
-
-        start = np.asarray(self.robot.current_position, dtype=float)
-        clusters.sort(
-            key=lambda cluster: math.hypot(
-                self._cluster_center(cluster)[0] - start[0],
-                self._cluster_center(cluster)[1] - start[1],
-            )
-        )
-        self.stats["clusters"] = max(self.stats["clusters"], len(clusters))
-        return clusters
-
+ 
     @staticmethod
     def _point_segment_distance(point: np.ndarray, start: np.ndarray,
                                 end: np.ndarray) -> float:
@@ -478,66 +454,158 @@ class Problem3Strategy:
             else:
                 self._update_clear_failure(cs, center)
 
-    def _phase_localize(self) -> None:
+ 
+    def _phase_tsp_routing(self) -> None:
+        """统一目标池 + 动态重规划。
+
+        每轮把所有待处理频道合并成一个任务池：
+        - LOCALIZE：可行域仍大的频道，选择下一补测点；
+        - CLEAR：半径足够小的频道，直接清除或两次清除；
+        - GRID：需要兜底覆盖的频道，每轮只执行一个网格点。
+
+        任务池用带“顺路收益”的贪心 TSP 排序；每执行一个任务后重新建池，
+        让新测向、新清除和顺路机会即时进入下一轮决策。
+        """
         for cs in self._detected_pending():
             self._recompute_enclosing(cs)
 
-        cluster_cursor = 0
         while self._time_left():
             if self.cleared_count >= self.cfg.stop_at_source_count:
                 break
-            candidates = [
-                cs for cs in self._detected_pending()
-                if cs.radius is not None and cs.radius > self.cfg.safe_region_radius
-                and not cs.grid_mode and cs.probe_count < PROBE_MAX_PER_CHANNEL
-            ]
-            if not candidates:
+            tasks = self._build_route_tasks()
+            if not tasks:
                 break
-
-            clusters = self._cluster_channel_states(candidates)
-            if not clusters:
+            order = self._tsp_task_order(tasks)
+            if not order:
                 break
+            task = tasks[order[0]]
+            self._execute_route_task(task)
 
-            progress = False
-            cluster_targets = [self._cluster_center(cluster) for cluster in clusters]
-            start = np.asarray(self.robot.current_position, dtype=float)
-            cluster_order = nearest_neighbor_route(start, cluster_targets)
-            if cluster_order:
-                shift = cluster_cursor % len(cluster_order)
-                cluster_order = cluster_order[shift:] + cluster_order[:shift]
-                cluster_cursor += 1
+    def _build_route_tasks(self) -> List[RouteTask]:
+        tasks: List[RouteTask] = []
+        robot_pos = np.asarray(self.robot.current_position, dtype=float)
 
-            for cluster_index in cluster_order:
-                cluster = clusters[cluster_index]
-                cluster_candidates = [
-                    cs for cs in cluster
-                    if cs.status == STATUS_DETECTED
-                    and cs.radius is not None
-                    and cs.radius > self.cfg.safe_region_radius
-                    and not cs.grid_mode
-                    and cs.probe_count < PROBE_MAX_PER_CHANNEL
-                ]
-                if not cluster_candidates or not self._time_left():
+        for cs in self._detected_pending():
+            if cs.status == STATUS_CLEARED:
+                continue
+            if cs.enclosing is None:
+                self._recompute_enclosing(cs)
+
+            if cs.radius is not None and cs.radius <= self.cfg.safe_region_radius:
+                tasks.append(RouteTask("clear", cs.center.copy(), cs, "safe clear"))
+                continue
+
+            if cs.radius is not None and cs.radius > self.cfg.safe_region_radius \
+                    and not cs.grid_mode and cs.probe_count < PROBE_MAX_PER_CHANNEL:
+                probe = self._peek_probe(cs, robot_pos)
+                if probe is not None:
+                    point, kind = probe
+                    tasks.append(RouteTask("localize", point, cs, kind))
                     continue
-                robot_pos = np.asarray(self.robot.current_position, dtype=float)
-                best = None  # (cost, cs, point, kind)
-                for cs in cluster_candidates:
-                    plan = self._next_probe(cs, robot_pos)
-                    if plan is None:
-                        cs.grid_mode = True
-                        continue
-                    point, kind = plan
-                    cost = self.robot.estimate_move_time(float(point[0]), float(point[1]))
-                    if best is None or cost < best[0]:
-                        best = (cost, cs, point, kind)
-                if best is None:
-                    continue
-                _, cs, point, kind = best
-                self._opportunistic_strike(point, exclude_channel=cs.channel)
-                self._execute_probe(cs, point, kind)
-                progress = True
-            if not progress:
-                break
+                cs.grid_mode = True
+
+            if cs.feasible is not None:
+                tasks.append(RouteTask("grid", self._clear_target(cs), cs, "grid step"))
+
+        return tasks
+
+    def _ready_clear_points(self, tasks: List[RouteTask]) -> List[np.ndarray]:
+        return [
+            np.asarray(task.point, dtype=float)
+            for task in tasks
+            if task.kind == "clear"
+            and task.channel_state.radius is not None
+            and task.channel_state.radius <= CLEAR_RADIUS
+        ]
+
+    def _edge_cost(self, start: np.ndarray, end: np.ndarray,
+                   ready_clear_points: List[np.ndarray]) -> float:
+        distance_cost = float(np.linalg.norm(end - start))
+        if not self.cfg.opportunistic_enabled:
+            return distance_cost
+
+        bonus = 0.0
+        for point in ready_clear_points:
+            if np.linalg.norm(point - end) < 1e-6:
+                continue
+            detour = (
+                float(np.linalg.norm(point - start))
+                + float(np.linalg.norm(end - point))
+                - distance_cost
+            )
+            if detour <= self.cfg.opportunistic_max_detour:
+                bonus += self.cfg.opportunistic_max_detour - detour
+        return max(0.0, distance_cost - 0.65 * bonus)
+
+    def _tsp_task_order(self, tasks: List[RouteTask]) -> List[int]:
+        """带顺路收益的最近邻 TSP；动态重规划时只执行首个任务。"""
+        if not tasks:
+            return []
+        remaining = set(range(len(tasks)))
+        order: List[int] = []
+        current = np.asarray(self.robot.current_position, dtype=float)
+        ready_clear_points = self._ready_clear_points(tasks)
+
+        while remaining:
+            best_idx = min(
+                remaining,
+                key=lambda idx: (
+                    self._edge_cost(current, np.asarray(tasks[idx].point, dtype=float), ready_clear_points),
+                    0 if tasks[idx].kind == "clear" else 1 if tasks[idx].kind == "localize" else 2,
+                    tasks[idx].channel_state.channel,
+                ),
+            )
+            order.append(best_idx)
+            remaining.remove(best_idx)
+            current = np.asarray(tasks[best_idx].point, dtype=float)
+        return order
+
+    def _execute_route_task(self, task: RouteTask) -> None:
+        cs = task.channel_state
+        self._opportunistic_strike(task.point, exclude_channel=cs.channel)
+        if cs.status == STATUS_CLEARED:
+            return
+
+        if task.kind == "localize":
+            self._execute_probe(cs, task.point, task.note)
+        elif task.kind == "clear":
+            self._clear_step(cs)
+        else:
+            self._grid_clear_step(cs)
+
+    def _peek_probe(self, cs: ChannelState,
+                    robot_pos: np.ndarray) -> Optional[Tuple[np.ndarray, str]]:
+        if cs.first_direction is None:
+            return None
+
+        if not cs.probe_plan and cs.probe_count < 2:
+            S, u = cs.first_direction
+            v = perpendicular_left(u)
+            q1 = S + PROBE_FIRST_FORWARD * u + PROBE_FIRST_SIDE * v
+            q2 = S + PROBE_FIRST_FORWARD * u - PROBE_FIRST_SIDE * v
+            d1 = math.hypot(q1[0] - robot_pos[0], q1[1] - robot_pos[1])
+            d2 = math.hypot(q2[0] - robot_pos[0], q2[1] - robot_pos[1])
+            cs.probe_plan = [q1, q2] if d1 <= d2 else [q2, q1]
+
+        if cs.probe_plan:
+            return np.asarray(cs.probe_plan[0], dtype=float), "first_group"
+
+        if cs.enclosing is None or cs.radius is None or cs.feasible is None:
+            return None
+        C = cs.center
+        R = cs.radius
+        e, _ = farthest_pair(cs.feasible)
+        n = perpendicular_left(e)
+        h = max(40.0, min(250.0, 950.0 - R))
+        sign = 1.0 if cs.probe_count % 2 == 0 else -1.0
+        point = C + sign * h * n
+        if R + h > MIN_RECEIVE_RADIUS:
+            point = C.copy()
+        if cs.last_probe is not None and \
+                math.hypot(point[0] - cs.last_probe[0],
+                           point[1] - cs.last_probe[1]) < 1e-6:
+            return None
+        return np.asarray(point, dtype=float), "adaptive"
 
     def _next_probe(self, cs: ChannelState,
                     robot_pos: np.ndarray) -> Optional[Tuple[np.ndarray, str]]:
@@ -615,68 +683,7 @@ class Problem3Strategy:
         if cs.stagnation >= PROBE_STAGNATION_LIMIT:
             cs.grid_mode = True
 
-    # ---------------------------------------------------------------- 阶段C
-    def _phase_clear(self) -> None:
-        pending = [
-            cs for cs in self._detected_pending()
-            if cs.status != STATUS_CLEARED and cs.feasible is not None
-        ]
-        if not pending:
-            return
-
-        for cs in pending:
-            if cs.enclosing is None:
-                self._recompute_enclosing(cs)
-            if cs.enclosing is not None and cs.radius is not None:
-                continue
-            # 可行域退化（理论上不会发生），留给网格/当前点兜底
-            cs.grid_mode = True
-
-        cluster_cursor = 0
-        while self._time_left():
-            pending = [
-                cs for cs in self._detected_pending()
-                if cs.status != STATUS_CLEARED and cs.feasible is not None
-            ]
-            if not pending or self.cleared_count >= self.cfg.stop_at_source_count:
-                break
-
-            clusters = self._cluster_channel_states(pending)
-            cluster_targets = [self._cluster_center(cluster) for cluster in clusters]
-            start = np.asarray(self.robot.current_position, dtype=float)
-            cluster_order = nearest_neighbor_route(start, cluster_targets)
-            if cluster_order:
-                shift = cluster_cursor % len(cluster_order)
-                cluster_order = cluster_order[shift:] + cluster_order[:shift]
-                cluster_cursor += 1
-
-            progressed = False
-            for cluster_index in cluster_order:
-                if not self._time_left():
-                    break
-                if self.cleared_count >= self.cfg.stop_at_source_count:
-                    break
-                cluster = clusters[cluster_index]
-                batch = [
-                    cs for cs in cluster
-                    if cs.status != STATUS_CLEARED and cs.feasible is not None
-                ]
-                if not batch:
-                    continue
-
-                targets = [self._clear_target(cs) for cs in batch]
-                start = np.asarray(self.robot.current_position, dtype=float)
-                order = nearest_neighbor_route(start, targets)
-                if not order:
-                    continue
-                idx = order[0]
-                cs = batch[idx]
-                self._opportunistic_strike(targets[idx], exclude_channel=cs.channel)
-                progressed = self._clear_step(cs) or progressed
-
-            if not progressed:
-                break
-
+   
     def _clear_target(self, cs: ChannelState) -> np.ndarray:
         if cs.enclosing is None:
             self._recompute_enclosing(cs)
