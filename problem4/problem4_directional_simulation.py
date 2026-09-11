@@ -21,10 +21,18 @@
    外圈半径使半径 1800 m 的目标圆恰好内切于外圈，内圈再铺满中心区域，
    因此任意位置、任意发射方向的源都必有一点同时落在其 1000 m 接收圆与 90° 定向半圆内。
 
+本模块只提供策略、本地仿真器与**批量验证**入口；单元测试与随机场景验证
+（每个案例恰好 10 个源）在 ``problem4/test_problem4.py``。
+
 用法::
 
-    python problem4/problem4_directional_simulation.py                 # 本地 30 个案例
+    python problem4/problem4_directional_simulation.py                 # 本地 30 个案例，种子随机
     python problem4/problem4_directional_simulation.py --cases 200
+    python problem4/problem4_directional_simulation.py --cases 10 --source-count 10
+    python problem4/problem4_directional_simulation.py --random-state 42   # 复现某次运行
+
+不指定 ``--random-state`` 时每次运行都重新随机源的位置、接收半径、
+全向/定向搭配与发射方向；``--source-count 10`` 可把每个案例固定为 10 个源。
 """
 
 from __future__ import annotations
@@ -489,12 +497,25 @@ def generate_mixed_sources(
     seed: int,
     directional_probability: float = 0.5,
     force_mixed: bool = True,
+    source_count: int | None = None,
 ) -> list[MixedSource]:
-    """按题面假设生成 10~16 个源，其中一部分为定向源。"""
+    """按题面假设生成一批源，其中一部分为定向源。
+
+    ``source_count`` 为 ``None`` 时在题面的 10~16 之间随机；给定具体数值时
+    强制用该数量（例如固定 10 个源的随机测试场景）。位置、接收半径、
+    全向/定向标志与发射方向始终随机生成。
+    """
     if not 0.0 <= directional_probability <= 1.0:
         raise ValueError("directional_probability 必须落在 [0, 1]")
+    if source_count is not None and not (
+        SOURCE_COUNT_MIN <= source_count <= CHANNEL_MAX
+    ):
+        raise ValueError(
+            f"source_count 必须在 {SOURCE_COUNT_MIN}..{CHANNEL_MAX} 之间"
+        )
     rng = np.random.default_rng(seed)
-    source_count = int(rng.integers(SOURCE_COUNT_MIN, SOURCE_COUNT_MAX + 1))
+    if source_count is None:
+        source_count = int(rng.integers(SOURCE_COUNT_MIN, SOURCE_COUNT_MAX + 1))
     channels = rng.choice(
         np.arange(CHANNEL_MIN, CHANNEL_MAX + 1), size=source_count, replace=False
     )
@@ -530,202 +551,6 @@ def generate_mixed_sources(
             emission_angles,
             strict=True,
         )
-    ]
-
-
-# --------------------------------------------------------------------------- #
-# 手工测试用例：每个恰好 10 个源，全向/定向的搭配人工排定
-# --------------------------------------------------------------------------- #
-FIXED_CASE_SOURCE_COUNT = 10
-
-
-@dataclass(frozen=True)
-class FixedSourceSpec:
-    """手工用例里的一个源：坐标单位米，发射方向单位度（仅定向源需要）。"""
-
-    channel: int
-    x: float
-    y: float
-    receive_radius_m: float
-    directional: bool
-    emission_angle_deg: float | None = None
-
-
-@dataclass(frozen=True)
-class FixedCase:
-    case_id: int
-    name: str
-    note: str
-    seed: int
-    sources: tuple[FixedSourceSpec, ...]
-
-    @property
-    def directional_count(self) -> int:
-        return sum(source.directional for source in self.sources)
-
-
-def _omni(
-    channel: int, x: float, y: float, receive_radius_m: float
-) -> FixedSourceSpec:
-    return FixedSourceSpec(channel, x, y, receive_radius_m, False, None)
-
-
-def _dir(
-    channel: int,
-    x: float,
-    y: float,
-    receive_radius_m: float,
-    emission_angle_deg: float,
-) -> FixedSourceSpec:
-    return FixedSourceSpec(
-        channel, x, y, receive_radius_m, True, emission_angle_deg
-    )
-
-
-FIXED_CASES: tuple[FixedCase, ...] = (
-    FixedCase(
-        case_id=1,
-        name="随机混合A",
-        note="10 个源散布全盘，6 定向 / 4 全向，接收半径取中高值",
-        seed=101,
-        sources=(
-            _omni(2, 1200.0, 0.0, 1400.0),
-            _dir(5, 300.0, 1100.0, 1350.0, 40.0),
-            _dir(7, -900.0, 700.0, 1500.0, 200.0),
-            _omni(9, -1300.0, -300.0, 1200.0),
-            _dir(11, 200.0, -1400.0, 1450.0, 300.0),
-            _dir(13, 900.0, -600.0, 1000.0, 135.0),
-            _omni(15, -200.0, 300.0, 1100.0),
-            _dir(16, 1500.0, 400.0, 1050.0, 260.0),
-            _dir(18, -600.0, -1200.0, 1500.0, 75.0),
-            _omni(20, 50.0, 800.0, 1300.0),
-        ),
-    ),
-    FixedCase(
-        case_id=2,
-        name="随机混合B",
-        note="10 个源，4 定向 / 6 全向，含 3 个贴近外圈的源",
-        seed=102,
-        sources=(
-            _omni(1, 700.0, 1500.0, 1300.0),
-            _dir(3, -1500.0, 200.0, 1400.0, 190.0),
-            _omni(4, 400.0, -900.0, 1000.0),
-            _dir(6, -400.0, -1500.0, 1450.0, 10.0),
-            _omni(8, 1600.0, -500.0, 1200.0),
-            _dir(10, -800.0, -400.0, 1500.0, 95.0),
-            _omni(12, 250.0, 250.0, 1050.0),
-            _omni(14, -1100.0, 900.0, 1350.0),
-            _dir(17, 1000.0, 900.0, 1100.0, 250.0),
-            _omni(19, -150.0, -600.0, 1500.0),
-        ),
-    ),
-    FixedCase(
-        case_id=3,
-        name="全向基准",
-        note="10 个全向源，半径 1500 m 均布，作为无定向遮挡的对照基线",
-        seed=103,
-        sources=(
-            _omni(2, 1500.0, 0.0, 1500.0),
-            _omni(4, 1213.5, 881.7, 1500.0),
-            _omni(6, 463.5, 1426.6, 1500.0),
-            _omni(8, -463.5, 1426.6, 1500.0),
-            _omni(10, -1213.5, 881.7, 1500.0),
-            _omni(12, -1500.0, 0.0, 1500.0),
-            _omni(14, -1213.5, -881.7, 1500.0),
-            _omni(16, -463.5, -1426.6, 1500.0),
-            _omni(18, 463.5, -1426.6, 1500.0),
-            _omni(20, 1213.5, -881.7, 1500.0),
-        ),
-    ),
-    FixedCase(
-        case_id=4,
-        name="全定向",
-        note="10 个定向源，半径 900 m 环形、发射方向全部朝圆心、接收半径取最小值 1000 m",
-        seed=104,
-        sources=(
-            _dir(1, 855.9, 278.1, 1000.0, 198.0),
-            _dir(3, 529.0, 728.1, 1000.0, 234.0),
-            _dir(5, 0.0, 900.0, 1000.0, 270.0),
-            _dir(7, -529.0, 728.1, 1000.0, 306.0),
-            _dir(9, -855.9, 278.1, 1000.0, 342.0),
-            _dir(11, -855.9, -278.1, 1000.0, 18.0),
-            _dir(13, -529.0, -728.1, 1000.0, 54.0),
-            _dir(15, 0.0, -900.0, 1000.0, 90.0),
-            _dir(17, 529.0, -728.1, 1000.0, 126.0),
-            _dir(19, 855.9, -278.1, 1000.0, 162.0),
-        ),
-    ),
-    FixedCase(
-        case_id=5,
-        name="中心密集定向朝外",
-        note=(
-            "10 个源全部落在半径 620 m 内，7 定向（发射方向朝外，从外圈靠近必被遮挡）/ "
-            "3 全向；其中 1 个源正好在圆心，用于触发/验证 near 直接清除"
-        ),
-        seed=105,
-        sources=(
-            _dir(1, 500.0, 0.0, 1000.0, 0.0),
-            _dir(2, 400.0, 300.0, 1000.0, 37.0),
-            _omni(3, 250.0, 450.0, 1000.0),
-            _dir(4, -500.0, 100.0, 1050.0, 169.0),
-            _dir(5, -350.0, -400.0, 1000.0, 229.0),
-            _omni(6, 0.0, -550.0, 1100.0),
-            _dir(7, 150.0, -200.0, 1000.0, 307.0),
-            _omni(8, 0.0, 0.0, 1200.0),
-            _dir(9, 600.0, -150.0, 1000.0, 346.0),
-            _dir(10, -200.0, -100.0, 1000.0, 207.0),
-        ),
-    ),
-)
-
-
-def build_fixed_sources(case: FixedCase) -> list[MixedSource]:
-    """把手工用例转换成仿真源；用例写错（频道重复/越界等）立刻报错。"""
-    if len(case.sources) != FIXED_CASE_SOURCE_COUNT:
-        raise ValueError(
-            f"用例「{case.name}」必须恰好 {FIXED_CASE_SOURCE_COUNT} 个源，"
-            f"实际 {len(case.sources)} 个"
-        )
-    channels = [source.channel for source in case.sources]
-    if len(set(channels)) != len(channels):
-        raise ValueError(f"用例「{case.name}」存在重复频道 {channels}")
-    for source in case.sources:
-        if not CHANNEL_MIN <= source.channel <= CHANNEL_MAX:
-            raise ValueError(
-                f"用例「{case.name}」频道 {source.channel} 不在 "
-                f"{CHANNEL_MIN}..{CHANNEL_MAX}"
-            )
-        if math.hypot(source.x, source.y) > TARGET_RADIUS + 1e-9:
-            raise ValueError(
-                f"用例「{case.name}」频道 {source.channel} 落在半径 "
-                f"{TARGET_RADIUS} m 目标圆之外"
-            )
-        if not (
-            MIN_RECEIVE_RADIUS - 1e-9
-            <= source.receive_radius_m
-            <= MAX_RECEIVE_RADIUS + 1e-9
-        ):
-            raise ValueError(
-                f"用例「{case.name}」频道 {source.channel} 接收半径 "
-                f"{source.receive_radius_m} 不在 [1000, 1500]"
-            )
-        if source.directional != (source.emission_angle_deg is not None):
-            raise ValueError(
-                f"用例「{case.name}」频道 {source.channel} 的定向标志与发射方向不一致"
-            )
-    return [
-        MixedSource(
-            channel=source.channel,
-            position=np.array([source.x, source.y], dtype=float),
-            receive_radius=source.receive_radius_m,
-            directional=source.directional,
-            emission_angle_rad=(
-                None
-                if source.emission_angle_deg is None
-                else math.radians(source.emission_angle_deg)
-            ),
-        )
-        for source in case.sources
     ]
 
 
@@ -846,6 +671,7 @@ class Problem4Strategy:
             "survey_remeasures": 0.0,
             "survey_inserted_clears": 0.0,
             "survey_localized_skips": 0.0,
+            "finish_shared_remeasures": 0.0,
         }
         self.survey_measurement_count = 0
         self.grid_fallback_count = 0
@@ -1066,42 +892,75 @@ class Problem4Strategy:
         if distance_point_to_polygon(station, polygon) > MAX_RECEIVE_RADIUS + 1e-9:
             self.skipped_impossible_remeasure_count += 1
             return False
-        if self.MIN_SURVEY_CROSSING_ANGLE_DEG > 0.0:
-            center = circle.center
-            candidate_vector = (
-                station[0] - center[0],
-                station[1] - center[1],
-            )
-            candidate_norm = math.hypot(candidate_vector[0], candidate_vector[1])
-            if candidate_norm > 1e-9:
-                maximum_crossing_angle = 0.0
-                for observation in self.observations[channel]:
-                    existing_vector = (
-                        observation.position[0] - center[0],
-                        observation.position[1] - center[1],
-                    )
-                    existing_norm = math.hypot(
-                        existing_vector[0], existing_vector[1]
-                    )
-                    if existing_norm <= 1e-9:
-                        maximum_crossing_angle = 90.0
-                        break
-                    cosine = abs(
-                        (
-                            candidate_vector[0] * existing_vector[0]
-                            + candidate_vector[1] * existing_vector[1]
-                        )
-                        / (candidate_norm * existing_norm)
-                    )
-                    crossing_angle = math.degrees(
-                        math.acos(min(1.0, max(0.0, cosine)))
-                    )
-                    maximum_crossing_angle = max(
-                        maximum_crossing_angle, crossing_angle
-                    )
-                if maximum_crossing_angle < self.MIN_SURVEY_CROSSING_ANGLE_DEG:
-                    return False
+        if (
+            self.MIN_SURVEY_CROSSING_ANGLE_DEG > 0.0
+            and self._maximum_crossing_angle(channel, station, circle)
+            < self.MIN_SURVEY_CROSSING_ANGLE_DEG
+        ):
+            return False
         return True
+
+    def _maximum_crossing_angle(
+        self, channel: int, point: Point, circle: Circle
+    ) -> float:
+        center = circle.center
+        candidate_vector = (
+            point[0] - center[0],
+            point[1] - center[1],
+        )
+        candidate_norm = math.hypot(candidate_vector[0], candidate_vector[1])
+        if candidate_norm <= 1e-9:
+            return 90.0
+        maximum_crossing_angle = 0.0
+        for observation in self.observations[channel]:
+            existing_vector = (
+                observation.position[0] - center[0],
+                observation.position[1] - center[1],
+            )
+            existing_norm = math.hypot(existing_vector[0], existing_vector[1])
+            if existing_norm <= 1e-9:
+                return 90.0
+            cosine = abs(
+                (
+                    candidate_vector[0] * existing_vector[0]
+                    + candidate_vector[1] * existing_vector[1]
+                )
+                / (candidate_norm * existing_norm)
+            )
+            crossing_angle = math.degrees(
+                math.acos(min(1.0, max(0.0, cosine)))
+            )
+            maximum_crossing_angle = max(maximum_crossing_angle, crossing_angle)
+        return maximum_crossing_angle
+
+    def _finish_shared_measure_at(
+        self, point: Point, exclude_channel: int | None = None
+    ) -> None:
+        """收尾阶段动态融合：在已到达点顺带补测其它未收敛频道。"""
+        candidates: list[tuple[float, int, Circle]] = []
+        for channel in self.detected - self.cleared:
+            if channel == exclude_channel or not self.observations[channel]:
+                continue
+            polygon = self._polygon(channel)
+            circle = minimum_enclosing_circle(polygon)
+            if circle.radius <= SAFE_LOCALIZATION_RADIUS_M:
+                continue
+            if distance_point_to_polygon(point, polygon) > MAX_RECEIVE_RADIUS + 1e-9:
+                continue
+            angle = self._maximum_crossing_angle(channel, point, circle)
+            if angle < self.MIN_SURVEY_CROSSING_ANGLE_DEG:
+                continue
+            candidates.append((-angle, channel, circle))
+
+        candidates.sort()
+        for _, channel, _ in candidates[:2]:
+            if not self._time_left() or channel in self.cleared:
+                break
+            result = self._measure(point[0], point[1], channel)
+            self.stats["finish_shared_remeasures"] += 1
+            if result.result == "no_signal":
+                self.probe_no_signal_count += 1
+            self._record_measurement(channel, point, result.result, result.svd_deg)
 
     # ---------------------------------------------------------------- 阶段B
     def finish(self) -> None:
@@ -1189,8 +1048,10 @@ class Problem4Strategy:
             if next_node in best_probe_actions:
                 channel, probe_index, point = best_probe_actions[next_node]
                 self._measure_probe(channel, probe_index, point)
+                self._finish_shared_measure_at(self.robot.current_position, channel)
             else:
                 self._clear_circle(next_node, clear_circles[next_node])
+                self._finish_shared_measure_at(self.robot.current_position, next_node)
 
     def _probe_options(self, channel: int) -> list[tuple[int, Point]]:
         probes = first_probe_points(self.observations[channel][0])
@@ -1284,6 +1145,7 @@ class Problem4CaseResult:
     survey_remeasure_count: float
     survey_inserted_clear_count: float
     survey_localized_skip_count: float
+    finish_shared_remeasure_count: float
 
 
 def run_problem4_case(
@@ -1292,35 +1154,29 @@ def run_problem4_case(
     directional_probability: float = 0.5,
     force_mixed: bool = True,
     survey_detected_channels: bool = True,
+    source_count: int | None = None,
 ) -> Problem4CaseResult:
-    """随机场景：源数 10~16，位置/接收半径/定向标志按题面假设随机生成。"""
+    """随机场景：源数默认在 10~16 随机，位置/接收半径/定向标志全部随机生成。
+
+    ``source_count=10`` 可固定为"恰好 10 个源"的随机场景（源数固定，
+    但全向/定向搭配、位置、接收半径、发射方向每次运行都重新随机）。
+    """
     sources = generate_mixed_sources(
         seed,
         directional_probability=directional_probability,
         force_mixed=force_mixed,
+        source_count=source_count,
     )
     return _evaluate_case(
         case_id=case_id,
-        case_name=f"随机 seed={seed}",
+        case_name=(
+            f"随机 {len(sources)} 源 seed={seed}"
+            if source_count is not None
+            else f"随机 seed={seed}"
+        ),
         seed=seed,
         sources=sources,
         directional_probability=directional_probability,
-        survey_detected_channels=survey_detected_channels,
-    )
-
-
-def run_fixed_case(
-    case: FixedCase,
-    survey_detected_channels: bool = True,
-) -> Problem4CaseResult:
-    """手工用例：恰好 10 个源，全向/定向的搭配人工排定（见 ``FIXED_CASES``）。"""
-    sources = build_fixed_sources(case)
-    return _evaluate_case(
-        case_id=case.case_id,
-        case_name=case.name,
-        seed=case.seed,
-        sources=sources,
-        directional_probability=case.directional_count / len(sources),
         survey_detected_channels=survey_detected_channels,
     )
 
@@ -1397,6 +1253,7 @@ def _evaluate_case(
         survey_remeasure_count=float(stats["survey_remeasures"]),
         survey_inserted_clear_count=float(stats["survey_inserted_clears"]),
         survey_localized_skip_count=float(stats["survey_localized_skips"]),
+        finish_shared_remeasure_count=float(stats["finish_shared_remeasures"]),
     )
 
 
@@ -1405,7 +1262,6 @@ def summarize_problem4(
     random_state: int,
     directional_probability: float,
     survey_detected_channels: bool,
-    strategy_name: str = "problem4_concentric_dodecagons",
 ) -> dict[str, object]:
     totals = np.array([result.total_time_s for result in results], dtype=float)
     source_counts = np.array(
@@ -1421,7 +1277,7 @@ def summarize_problem4(
     # 单源定位清除时间 = 该案例总虚拟时间 / 该案例干扰源数
     per_source = totals / source_counts
     return {
-        "strategy": strategy_name,
+        "strategy": "problem4_concentric_dodecagons",
         "random_state": random_state,
         "case_count": len(results),
         "case_names": [result.case_name for result in results],
@@ -1518,6 +1374,9 @@ def summarize_problem4(
         "mean_survey_localized_skip_count": float(
             np.mean([result.survey_localized_skip_count for result in results])
         ),
+        "mean_finish_shared_remeasure_count": float(
+            np.mean([result.finish_shared_remeasure_count for result in results])
+        ),
         "assumptions": {
             "source_position": "半径为 1800 m 的圆域内按面积均匀、相互独立",
             "receive_radius_m": "在 [1000, 1500] 上独立均匀",
@@ -1545,17 +1404,30 @@ def write_problem4_results(
     )
 
 
+def resolve_random_state(random_state: int | None) -> int:
+    """未显式指定种子时，每次运行重新取一个随机种子（并写进结果便于复现）。"""
+    if random_state is not None:
+        return int(random_state)
+    return int(np.random.default_rng().integers(0, 2**31 - 1))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="问题4 定向源本地仿真批量验证")
     parser.add_argument("--cases", type=int, default=30)
-    parser.add_argument("--random-state", type=int, default=42)
-    parser.add_argument("--directional-probability", type=float, default=0.5)
-    parser.add_argument("--allow-pure", action="store_true")
     parser.add_argument(
-        "--fixed-cases",
-        action="store_true",
-        help="改为运行 FIXED_CASES 里的手工用例（每个恰好 10 个源）",
+        "--random-state",
+        type=int,
+        default=None,
+        help="随机种子；不指定则每次运行都重新随机（结果里会记录本次种子）",
     )
+    parser.add_argument("--directional-probability", type=float, default=0.5)
+    parser.add_argument(
+        "--source-count",
+        type=int,
+        default=None,
+        help="固定每个案例的干扰源数（例如 10）；默认在题面的 10~16 之间随机",
+    )
+    parser.add_argument("--allow-pure", action="store_true")
     parser.add_argument(
         "--survey-unresolved-only",
         action="store_true",
@@ -1572,59 +1444,59 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     survey_detected_channels = not args.survey_unresolved_only
+    random_state = resolve_random_state(args.random_state)
 
-    if args.fixed_cases:
-        results = [
-            run_fixed_case(
-                case, survey_detected_channels=survey_detected_channels
-            )
-            for case in FIXED_CASES
-        ]
-        total_sources = sum(result.source_count for result in results)
-        summary = summarize_problem4(
-            results,
-            random_state=-1,
-            directional_probability=(
-                sum(result.directional_count for result in results)
-                / total_sources
-            ),
-            survey_detected_channels=survey_detected_channels,
-            strategy_name="problem4_fixed_cases",
-        )
-        write_problem4_results(results, summary, args.output_prefix)
-        for case, result in zip(FIXED_CASES, results, strict=True):
-            print(f"[{result.case_id}] {result.case_name}")
-            print(f"    说明：{case.note}")
-            print(
-                f"    源 {result.source_count}"
-                f"（定向 {result.directional_count} / "
-                f"全向 {result.omnidirectional_count}），"
-                f"清除 {result.cleared_count}/{result.source_count}，"
-                f"单源定位清除 {result.seconds_per_source:.1f} s，"
-                f"总虚拟时间 {result.total_time_s / 60.0:.2f} min，"
-                f"已确认定向 {result.confirmed_directional_count}，"
-                f"网格兜底 {result.grid_fallback_count}"
-            )
-        print(json.dumps(summary, ensure_ascii=False, indent=2))
-        return 0
+    source_hint = (
+        f"每个案例固定 {args.source_count} 个源"
+        if args.source_count is not None
+        else "源数在 10~16 随机"
+    )
+    print(
+        f"随机状态 {random_state}（{args.cases} 个案例，{source_hint}，"
+        f"全向/定向按 p={args.directional_probability} 随机；"
+        f"复现本次运行请加 --random-state {random_state}）"
+    )
 
     results = [
         run_problem4_case(
             case_id=index + 1,
-            seed=args.random_state + index,
+            seed=random_state + index,
             directional_probability=args.directional_probability,
             force_mixed=not args.allow_pure,
             survey_detected_channels=survey_detected_channels,
+            source_count=args.source_count,
         )
         for index in range(args.cases)
     ]
     summary = summarize_problem4(
         results,
-        random_state=args.random_state,
+        random_state=random_state,
         directional_probability=args.directional_probability,
         survey_detected_channels=survey_detected_channels,
     )
     write_problem4_results(results, summary, args.output_prefix)
+
+    # 逐案例明细（每个案例的单源平均定位清除时间等）
+    for result in results:
+        print(
+            f"[{result.case_id:>2}] {result.case_name}"
+            f"｜源 {result.source_count}"
+            f"（定向 {result.directional_count} / "
+            f"全向 {result.omnidirectional_count}）"
+            f"｜清除 {result.cleared_count}/{result.source_count}"
+            f"｜单源平均 {result.seconds_per_source:8.2f} s"
+            f"｜总 {result.total_time_s / 60.0:7.2f} min"
+            f"｜巡检 {result.survey_time_s / 60.0:7.2f} min"
+            f"｜已确认定向 {result.confirmed_directional_count}"
+            f"｜兜底 {result.grid_fallback_count}"
+        )
+    print(
+        f"合计：{len(results)} 例，成功 {sum(r.success for r in results)}/"
+        f"{len(results)}；单源平均 "
+        f"{float(summary['average_clear_time_s']):.2f} s"
+        f"（中位 {float(summary['median_clear_time_s']):.2f} s，"
+        f"最差 {float(summary['max_clear_time_s']):.2f} s）"
+    )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 

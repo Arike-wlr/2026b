@@ -109,6 +109,8 @@ def main() -> None:
     print(f"总虚拟时间：{total_time_s / 60.0:.2f} min （{total_time_s:.1f} s）")
     if cleared > 0:
         print(f"平均单源定位清除时间：{total_time_s / cleared:.2f} s")
+    else:
+        print("平均单源定位清除时间：无（本局没有清除任何干扰源）")
     print(f"巡检结束时刻：{survey_time_s / 60.0:.2f} min")
     print(f"检测 {int(float(stats['measures']))} 次，"
           f"清除 {int(float(stats['clears']))} 次"
@@ -117,6 +119,7 @@ def main() -> None:
     print(f"巡检途中复测 {int(float(stats.get('survey_remeasures', 0.0)))} 次，"
           f"巡检边插入清除 {int(float(stats.get('survey_inserted_clears', 0.0)))} 次")
     print(f"已收敛频道跳过巡检复测 {int(float(stats.get('survey_localized_skips', 0.0)))} 次")
+    print(f"收尾阶段动态融合复测 {int(float(stats.get('finish_shared_remeasures', 0.0)))} 次")
     print(f"定向遮挡导致的无信号：{summary['probe_no_signal_count']} 次（补测阶段）")
     print(f"网格兜底：{summary['grid_fallback_count']} 次，"
           f"最终可行域半径上界：{float(summary['max_final_radius_m']):.2f} m")
