@@ -29,13 +29,13 @@ def main(argv=None):
     p.add_argument('--confirm-problem3-practice',action='store_true')
     args=p.parse_args(argv)
     if args.mode=='offline':
-        from compare_coverage import run_case
+        from research_adapter import run_coverage_case as run_case
         result=run_case(args.policy,args.seed)
         print(json.dumps(result,ensure_ascii=False,indent=2))
         return 0 if result['success'] else 1
     # Existing guard verifies loopback URL and explicit interactive practice label
     # BEFORE creating the HTTP client. Protocol itself cannot detect platform mode.
-    from practice_guard import practice_guard
+    from research_adapter import practice_guard
     practice_guard(args)
     from client import RobotClient
     out=HERE/'research'/('practice_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
