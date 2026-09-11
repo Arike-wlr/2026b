@@ -39,6 +39,8 @@ for _p in (_ROOT, _HERE, os.path.join(_ROOT, "problem3")):
 from problem3_geometry import (  # noqa: E402
     circumscribed_polygon,
     farthest_pair,
+    nearest_neighbor_route,
+    two_opt_open,
     min_enclosing_circle,
     point_in_polygon,
     polygon_area,
@@ -69,6 +71,8 @@ from problem4_directional_simulation import (  # noqa: E402
     feasible_polygon,
     generate_mixed_sources,
     minimum_enclosing_circle,
+    open_route_length,
+    optimized_open_route,
     run_problem4_case,
     source_orientation_coverage_gap,
 )
@@ -237,6 +241,27 @@ class TestSurveyPlan(unittest.TestCase):
         self.assertEqual(route[0], (0.0, 0.0))
         self.assertEqual(
             sorted(route), sorted(concentric_dodecagon_stations())
+        )
+
+    def test_route_order_beats_plain_two_opt(self) -> None:
+        """Or-opt + 极角起点只能让路径更短：里程必须 ≤ 纯最近邻 + 2-opt。
+
+        动态重排每步都调用该求解器，所以这条同时守住"不会因为换求解器而变差"。
+        """
+        nodes = {
+            index: point for index, point in enumerate(self.stations[1:])
+        }
+        start = self.stations[0]
+        improved = optimized_open_route(start, nodes)
+        keys = sorted(nodes)
+        points = [nodes[key] for key in keys]
+        plain = two_opt_open(
+            nearest_neighbor_route(start, points), start, points
+        )
+        self.assertEqual(sorted(improved), keys)
+        self.assertLessEqual(
+            open_route_length(start, improved, nodes),
+            open_route_length(start, plain, nodes) + 1e-9,
         )
 
     def test_weak_unknown_angle_threshold_cannot_fire(self) -> None:

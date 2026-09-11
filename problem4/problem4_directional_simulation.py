@@ -211,15 +211,100 @@ def open_route_length(
     return total
 
 
+def _index_route_length(
+    start: Point, route: list[int], points: list[Point]
+) -> float:
+    """按 ``points`` 下标计价的开放路径长度（内部复用，避免反复建字典）。"""
+    total = 0.0
+    current = (float(start[0]), float(start[1]))
+    for index in route:
+        point = points[index]
+        total += distance(current, point)
+        current = (float(point[0]), float(point[1]))
+    return total
+
+
+def or_opt_open_route(
+    route: list[int], start: Point, points: list[Point], max_segment: int = 3
+) -> list[int]:
+    """Or-opt 局部搜索：把长度 ≤ ``max_segment`` 的片段（含反向）搬到更优位置。
+
+    2-opt 只能反转片段，动不了"整段搬移"；巡检路线是"两圈 + 圆心 + 清除点"
+    的结构，搬移比反转更有效。每轮只落一个改进再重扫，收敛很快。
+    """
+    best = list(route)
+    if len(best) < 4:
+        return best
+    while True:
+        base = _index_route_length(start, best, points)
+        improved = False
+        count = len(best)
+        for segment_length in range(1, max_segment + 1):
+            for begin in range(count - segment_length + 1):
+                piece = best[begin : begin + segment_length]
+                rest = best[:begin] + best[begin + segment_length :]
+                for insert_at in range(len(rest) + 1):
+                    if insert_at == begin:
+                        continue
+                    for candidate in (piece, piece[::-1]):
+                        trial = rest[:insert_at] + candidate + rest[insert_at:]
+                        value = _index_route_length(start, trial, points)
+                        if value < base - 1e-9:
+                            best = trial
+                            base = value
+                            improved = True
+                            break
+                    if improved:
+                        break
+                if improved:
+                    break
+            if improved:
+                break
+        if not improved:
+            return best
+
+
 def optimized_open_route(start: Point, nodes: dict[int, Point]) -> list[int]:
-    """最近邻 + 2-opt 的开放路径（节点数较多时的默认选择）。"""
+    """最近邻 + 2-opt + Or-opt 的开放路径；节点较多时再加若干极角起点取最优。
+
+    动态重排一次案例里会调用几十次，所以起点数按规模给：小规模子问题只做
+    Or-opt，20 个以上节点固定 6 个极角起点。实测（10 例 × 10 源）总里程
+    23108 m → 22639 m（仅 Or-opt）→ 22323 m（加 6 起点），总时间 -3.1%。
+    """
     keys = sorted(nodes)
     if not keys:
         return []
     points = [nodes[key] for key in keys]
-    route = nearest_neighbor_route(start, points)
-    route = two_opt_open(route, start, points)
-    return [keys[index] for index in route]
+    best = or_opt_open_route(
+        two_opt_open(nearest_neighbor_route(start, points), start, points),
+        start,
+        points,
+    )
+    extra_starts = min(6, len(keys) // 4) if len(keys) >= 8 else 0
+    if extra_starts == 0:
+        return [keys[index] for index in best]
+
+    order = sorted(
+        range(len(points)),
+        key=lambda index: math.atan2(
+            points[index][1] - float(start[1]),
+            points[index][0] - float(start[0]),
+        ),
+    )
+    candidates = [best]
+    stride = max(1, len(order) // extra_starts)
+    for position in range(0, len(order), stride):
+        first = order[position]
+        route = [first] + [
+            index for index in range(len(points)) if index != first
+        ]
+        candidates.append(
+            or_opt_open_route(two_opt_open(route, start, points), start, points)
+        )
+    best = min(
+        candidates, key=lambda route: _index_route_length(start, route, points)
+    )
+    return [keys[index] for index in best]
 
 
 def exact_open_route(
@@ -365,7 +450,23 @@ def concentric_dodecagon_route(
     inner_radius_m: float | None = None,
     outer_radius_m: float | None = None,
 ) -> list[Point]:
-    """25 点巡检路线：固定 25 点不变，用开放路径排序减少途中折返。"""
+    """25 点巡检路线：固定 25 点不变，用开放路径排序减少途中折返。
+
+    为什么不改成"先外圈再内圈，跑完外圈就按 no_signal 剪枝"（曾评估过）：
+
+    1. 判空必须相对**源**而非圆心。题面只给 r_c ~ U(1000,1500)，源可在 1800 m
+       盘内任意处；外圈站距圆心恒为 1863.497 m，但距源的距离中位仅 654 m
+       （实测 93.6% 的源距某个外圈站 < 1500 m），"距圆心 > 1300/1500"不等于超距。
+    2. 该方案下"保守阈值 1500"与"激进阈值 1300"完全等价：内圈 930 m < 1300，
+       外圈 1863.5 m > 1500，两者之间没有站点，所以并不更安全。
+    3. 外圈单独对 |G| < 1863.497 - 1000 = 863.497 m 的区域零覆盖（任一外圈站
+       距该区域里的源都 ≥ 1000 m = r_c 下界），因此外圈跑完**在数学上不可能**
+       对中心区判空；而中心区正是内圈存在的理由。
+    4. 实测 50 例 × 10 源：按"外圈全 no_signal 即剪枝"会误剪 **19.2%** 的源
+       （1.92/10，永久漏检，77% 是 |G| 中位 577 m 的中心源），换来约 775 s/例
+       （≈11.8%）的测量节省；而外圈优先的里程 19694 m 比现路线 17831 m 多
+       1863 m（@5 m/s 即 +373 s），净收益仅约 6%~8%——拿漏检换这点时间不划算。
+    """
     stations = concentric_dodecagon_stations(inner_radius_m, outer_radius_m)
     origin = stations[0]
     nodes = {index: point for index, point in enumerate(stations[1:], start=1)}
@@ -900,7 +1001,26 @@ class Problem4Strategy:
 
     # ------------------------------------------------------------ 可行域维护
     def _polygon(self, channel: int) -> np.ndarray:
-        # no_signal 可能来自定向遮挡，故刻意排除在几何裁剪之外
+        """测向楔形交集；``no_signal`` 刻意排除在几何裁剪之外。
+
+        ``no_signal @ P`` 只意味着「``|P-G| > r_c`` **或** ``(P-G)·e < 0``」（超距
+        或被遮挡），对单个测点、类型未知的源不构成任何约束——当成距离约束用会漏检。
+        唯一可靠的转化是「发射方向弧」约束：对候选位置 G，量程内（``|P-G| ≤ 1000``，
+        因 ``r_c ≥ 1000`` 必在量程内）的 no_signal 点必须都在背后、测到方向的点必须
+        都在前方，二者要能用一条过 G 的直线分开；无解则 G 不可能（等价于「全部测向
+        点落在某个 180° 弧内、量程内 no_signal 点全在弧外」）。
+
+        实测（种子 3000-3011）：
+        * 对未检出频道它退化为「量程内测点必须塞进一个开半平面」，即判空证书——
+          25 点方案的完备性正是建立在这条约束上：可排除区域随测点数为
+          6%(5 点) → 36%(15 点) → 92%(24 点) → **100%(25 点)**，所以判空必须等到
+          第 25 个测点，省不了任何测量。
+        * 对已定位频道几乎没有压缩力：80 次清除/补测决策里只有 3 次能缩小可行域
+          （中位包围半径 24 → 24 m），因为那时可行域只剩 ~29 m 半径，域内各候选点
+          的观测几何已经一致，要么全可行要么全不可行。
+        * ``r_c`` 的上界 1500 不能当约束：``r_c`` 可能只有 1000，no_signal 永远
+          证明不了「超距」。
+        """
         return feasible_polygon(self.observations[channel])
 
     def _circle(self, channel: int) -> Circle:
@@ -1007,7 +1127,19 @@ class Problem4Strategy:
 
     # ---------------------------------------------------------------- 阶段A
     def run_survey(self) -> float:
-        """访问全部 25 个安全点；清除插入后动态重排剩余路线。"""
+        """访问全部 25 个安全点；清除插入后动态重排剩余路线。
+
+        尚未检出的频道必须在**每个**测点都测一次，不能按"空检测计数"降频抽查。
+        曾评估"频率计分板"（首点全扫；未检出频道前 3 点跟着测、其后每 5 点抽查一次，
+        即每频道只落在 25 点里的 ~7 点）：16 例 × 10 源实测 **0/16 成功、平均漏
+        4.3/10 个源**，且 ``summary()["complete"]`` 仍报 True——漏检的源从未被检出，
+        不进 ``pending``，属于静默失败。
+
+        原因：判空与必检出是同一个 (G,e) 覆盖条件，25 点在该条件下是局部最小集
+        （见 ``test_every_station_is_necessary``），少测一个点就有区域无法排除；
+        每频道只测 ~7 点时，盘内约 90% 的区域成为盲区。唯一的合法"降频"是题面
+        给出的源数上界：已检出 ``SOURCE_COUNT_MAX`` 个即结束巡检。
+        """
         stations = concentric_dodecagon_stations()
         remaining = {
             index: point for index, point in enumerate(stations[1:], start=1)
@@ -1131,7 +1263,16 @@ class Problem4Strategy:
         return self.MAX_SURVEY_EDGE_DETOUR_M
 
     def _needs_free_survey_measurement(self, channel: int, station: Point) -> bool:
-        """判断在巡检测点上能否"免费"补一次已有频道的测向。"""
+        """判断在巡检测点上能否"免费"补一次已有频道的测向。
+
+        注意**不要**把"外圈不再复测已检出频道"当成省时间的优化。纯方位定位的
+        距离（沿方位）精度由基线长决定：``σ_r ≈ d²σ_β/L``，σ_β 是固定角误差
+        （1°，不随距离退化），所以外圈给出的长基线（L≈1800 m，σ_r≈10 m）比内圈
+        基线（L≈500 m，σ_r≈35 m）更能把可行域锁死；外圈点的横向误差大，但它补的
+        是内圈完全缺失的"距离"维度。实测（16 例 × 10 源）把外圈复测全禁掉：
+        补测 0.4 → 3.6 次/例、里程 21951 → 25719 m（+17%）、时间 6480 → 7287 s
+        （+12.5%）。所以这里只按边际价值判断，不按圈层一刀切。
+        """
         if channel in self.cleared or not self.observations[channel]:
             return False
         polygon = self._polygon(channel)
