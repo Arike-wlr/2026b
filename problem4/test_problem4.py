@@ -25,6 +25,7 @@ import math
 import os
 import sys
 import unittest
+from statistics import NormalDist
 from unittest import mock
 
 import numpy as np
@@ -37,6 +38,7 @@ for _p in (_ROOT, _HERE, os.path.join(_ROOT, "problem3")):
 
 from problem3_geometry import (  # noqa: E402
     circumscribed_polygon,
+    farthest_pair,
     min_enclosing_circle,
     point_in_polygon,
     polygon_area,
@@ -49,6 +51,8 @@ from problem3_strategy import (  # noqa: E402
     TARGET_RADIUS,
 )
 from problem4_directional_simulation import (  # noqa: E402
+    CAUTIOUS_MAX_PROBE_M,
+    CAUTIOUS_PROBE_BETA,
     COVER_LATTICE_SIDE_M,
     DODECAGON_INTERLEAVE_ANGLE_DEG,
     INNER_DODECAGON_RADIUS_M,
@@ -61,6 +65,7 @@ from problem4_directional_simulation import (  # noqa: E402
     clear_by_oriented_triangular_cover,
     concentric_dodecagon_route,
     concentric_dodecagon_stations,
+    distance,
     feasible_polygon,
     generate_mixed_sources,
     minimum_enclosing_circle,
@@ -234,6 +239,22 @@ class TestSurveyPlan(unittest.TestCase):
             sorted(route), sorted(concentric_dodecagon_stations())
         )
 
+    def test_weak_unknown_angle_threshold_cannot_fire(self) -> None:
+        """弱空剪枝的角度阈值不可达 → 该消融项永远不会生效（也不会漏源）。
+
+        24 个非圆心站方位恰好是 0,15,...,345°，角覆盖上限 345°，因此默认阈值
+        350° 永不触发；而把阈值降到可达区间就会开始漏检（见常量处的实测记录）。
+        """
+        strategy = Problem4Strategy(make_simulator([]))
+        non_center = [
+            point for point in self.stations if math.hypot(*point) > 1e-9
+        ]
+        coverage = strategy._angle_coverage_deg(non_center)
+        self.assertAlmostEqual(coverage, 345.0, places=9)
+        self.assertLess(
+            coverage, Problem4Strategy.WEAK_UNKNOWN_MIN_ANGLE_COVERAGE_DEG
+        )
+
     def test_plan_certifies_any_orientation(self) -> None:
         # 25 点方案对"任意位置 + 任意发射方向"的认证空隙必须不超过 180°
         self.assertLessEqual(
@@ -367,6 +388,48 @@ class TestDirectionalSemantics(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 # 2b. 顺路复测的价值判据（迁移自 q3_empty_channel_strategy 的 marginal_scan）
 # --------------------------------------------------------------------------- #
+class TestCautiousProbe(unittest.TestCase):
+    """β-Cautious（Vander Hook 等）自适应补测：默认关闭的消融项，但公式必须对。"""
+
+    def test_disabled_by_default(self) -> None:
+        strategy = Problem4Strategy(make_simulator([]))
+        strategy.observations[1] = [DirectionObservation((0.0, 0.0), 0.0)]
+        self.assertFalse(Problem4Strategy.CAUTIOUS_PROBE_ENABLED)
+        self.assertIsNone(strategy._cautious_probe_point(1))
+
+    def test_probe_distance_matches_lemma1(self) -> None:
+        # 论文 Lemma 1：r = σx / sqrt(σβ² − σs²)，σβ = (π/2)·Φ⁻¹(1 − β/2)
+        strategy = Problem4Strategy(make_simulator([]))
+        strategy.CAUTIOUS_PROBE_ENABLED = True
+        strategy.observations[1] = [DirectionObservation((0.0, 0.0), 0.0)]
+        polygon = feasible_polygon(strategy.observations[1])
+        circle = minimum_enclosing_circle(polygon)
+
+        point = strategy._cautious_probe_point(1)
+        self.assertIsNotNone(point)
+
+        sigma_beta = 0.5 * math.pi * NormalDist().inv_cdf(
+            1.0 - 0.5 * CAUTIOUS_PROBE_BETA
+        )
+        sigma_s = math.radians(BEARING_ERROR_DEG)
+        expected = min(
+            (circle.radius / 2.0) / math.sqrt(sigma_beta**2 - sigma_s**2),
+            CAUTIOUS_MAX_PROBE_M,
+        )
+        self.assertAlmostEqual(distance(point, circle.center), expected, places=6)
+
+        # 该候选必须保证整块可行域都在接收半径内 → 这次补测不会因为超距白跑
+        self.assertLessEqual(
+            max(distance(point, vertex) for vertex in polygon),
+            MIN_RECEIVE_RADIUS + 1e-9,
+        )
+
+        # 方向取"垂直于最大不确定方向"（可行域最长轴的法线）
+        axis, _ = farthest_pair(polygon)
+        offset = (point[0] - circle.center[0], point[1] - circle.center[1])
+        self.assertAlmostEqual(offset[0] * axis[0] + offset[1] * axis[1], 0.0, places=6)
+
+
 class TestMarginalSurveyDecisions(unittest.TestCase):
     """边际收益判据 / completes 例外 / 自适应放宽（latch）三条规则。"""
 

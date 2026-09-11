@@ -48,6 +48,7 @@ import os
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from statistics import NormalDist
 
 import numpy as np
 
@@ -63,6 +64,7 @@ from problem3_geometry import (  # noqa: E402
     circumscribed_polygon,
     clip_wedge,
     distance_point_to_polygon,
+    farthest_pair,
     intersect_disk,
     min_enclosing_circle,
     nearest_neighbor_route,
@@ -109,6 +111,16 @@ TRIANGULAR_LATTICE_OFFSET = (1.0 / 12.0, 1.0 / 12.0)
 # 第一次测向后用于拉开交会角的固定候选补测点，见式 Q± = S + 750u ± 600v
 PROBE_FORWARD_M = 750.0
 PROBE_SIDE_M = 600.0
+
+# β-Cautious（Vander Hook / Tokekar / Isler）迁移：
+# Lemma 1 给出"补测必须站多远"，使补测落在源背后的（模糊）概率不超过 β：
+#     r(i) = σx / sqrt(σβ² − σs²),  σβ = (π/2)·Φ⁻¹(1 − β/2)
+# β 是**感知模糊风险**的容忍度（不是定位精度），β→0 时站距发散；
+# 方向取"垂直于最大不确定方向"（可行域最长轴的法线），站距随不确定度自适应。
+CAUTIOUS_PROBE_BETA = 0.05
+CAUTIOUS_SENSOR_SIGMA_RAD = math.radians(BEARING_ERROR_DEG)
+CAUTIOUS_MIN_PROBE_M = 25.0
+CAUTIOUS_MAX_PROBE_M = 900.0
 
 
 class TimeBudgetExceeded(RuntimeError):
@@ -698,6 +710,21 @@ class Problem4Strategy:
     MARGINAL_REMEASURE_MARGIN_S = 2.0
     MARGINAL_REMEASURE_MARGIN_RELAXED_S = 0.0
     RESUME_REMEASURE_AT_KNOWN_SOURCES = 8
+    # β-Cautious 自适应补测（论文 Algorithm 1 的一步贪心）：默认**关闭**的消融项。
+    # 实测（10 例×10 源，种子 1000-1009 / 2000-2009）：10 例里只被评估 7 次、
+    # 3 次真正用上，单源时间 643.39→643.54 / 661.05→662.01 s，收益 ≈ 0；
+    # 原因是收尾阶段的补测几乎用不到——约 9.4 次/例的清除已在巡检途中完成。
+    CAUTIOUS_PROBE_ENABLED = False
+    CAUTIOUS_MAX_PROBE_STEPS = 3
+    ADAPTIVE_PROBE_INDEX = 90
+    # 「弱空频道剪枝」只作消融，默认关闭且**当前阈值不可达**：25 点方案的 24 个
+    # 非圆心站方位恰好是 0,15,...,345°，角覆盖上限 = 345°（需访完全部 24 站），
+    # 因此 350° 永不触发（实测 20 例标记 0 次、跳过 0 次，时间与基线一致）。
+    # 一旦把阈值降到可达区间就会开始漏检（20 例×10 源实测）：
+    #   330° → 单源 631.8 s（-3.5%），漏检 1/20；300° → 509.3 s（-22%），漏检 7/20；
+    #   270° → 517.6 s（-21%），漏检 6/20。
+    # 原因：判空的正确条件是"对每个候选源位置 G，1000 m 内的测点都能围住 G"，
+    # 而本规则只检查测点相对**原点**的角覆盖，且把超距测点也当成证据。
     WEAK_UNKNOWN_MIN_NO_SIGNAL_POINTS = 15
     WEAK_UNKNOWN_MIN_ANGLE_COVERAGE_DEG = 350.0
     WEAK_UNKNOWN_FINAL_PROBES = 3
@@ -1419,6 +1446,88 @@ class Problem4Strategy:
                 self._clear_circle(next_node, clear_circles[next_node])
                 self._finish_shared_measure_at(self.robot.current_position, next_node)
 
+    def _block_separation(
+        self, channel: int, center: Point, point: Point
+    ) -> float:
+        """候选测点方向离"已被遮挡方向"的总角距（越大越可能看得见源）。"""
+        candidate_angle = math.atan2(
+            point[1] - center[1], point[0] - center[0]
+        )
+        score = 0.0
+        for blocked in self.directional_block_points[channel]:
+            blocked_angle = math.atan2(
+                blocked[1] - center[1], blocked[0] - center[0]
+            )
+            separation = abs(
+                (candidate_angle - blocked_angle + math.pi) % (2.0 * math.pi)
+                - math.pi
+            )
+            score += separation
+        return score
+
+    def _cautious_probe_point(self, channel: int) -> Point | None:
+        """β-Cautious 自适应补测点（论文 Lemma 1 / Algorithm 1）。
+
+        ``r(i) = σx / sqrt(σβ² − σs²)``，其中 ``σβ = (π/2)·Φ⁻¹(1 − β/2)``：
+        站得越远，补测落进定向源"背后"的模糊概率越低，但行程越长；β 就是该风险的
+        容忍度。方向取垂直于最大不确定方向（可行域最长轴的法线），站距随当前不确定度
+        自适应缩放（区域是硬约束而非高斯，取 σx ≈ R/2）。
+
+        只在"整块可行域都在接收半径内"时才给出候选——否则这次补测可能白跑。
+        """
+        if not self.CAUTIOUS_PROBE_ENABLED or not self.observations[channel]:
+            return None
+        observed_steps = sum(
+            1
+            for index in self.attempted_probes[channel]
+            if index >= self.ADAPTIVE_PROBE_INDEX
+        )
+        if observed_steps >= self.CAUTIOUS_MAX_PROBE_STEPS:
+            return None
+        polygon = self._polygon(channel)
+        if len(polygon) < 3:
+            return None
+        circle = minimum_enclosing_circle(polygon)
+        sigma_beta = 0.5 * math.pi * NormalDist().inv_cdf(
+            1.0 - 0.5 * CAUTIOUS_PROBE_BETA
+        )
+        denominator = max(
+            sigma_beta * sigma_beta - CAUTIOUS_SENSOR_SIGMA_RAD**2, 1e-6
+        )
+        distance_est = (circle.radius / 2.0) / math.sqrt(denominator)
+        distance_est = min(distance_est, CAUTIOUS_MAX_PROBE_M)
+        if distance_est < CAUTIOUS_MIN_PROBE_M:
+            return None
+
+        axis, _ = farthest_pair(polygon)
+        normal = (-axis[1], axis[0])
+        center = circle.center
+        candidates = [
+            (
+                center[0] + distance_est * normal[0],
+                center[1] + distance_est * normal[1],
+            ),
+            (
+                center[0] - distance_est * normal[0],
+                center[1] - distance_est * normal[1],
+            ),
+        ]
+        usable = [
+            point
+            for point in candidates
+            if max(distance(point, vertex) for vertex in polygon)
+            <= MIN_RECEIVE_RADIUS + 1e-9
+        ]
+        if not usable:
+            return None
+        return min(
+            usable,
+            key=lambda point: (
+                -self._block_separation(channel, center, point),
+                distance(self.robot.current_position, point),
+            ),
+        )
+
     def _probe_options(self, channel: int) -> list[tuple[int, Point]]:
         probes = first_probe_points(self.observations[channel][0])
         options = [
@@ -1426,29 +1535,22 @@ class Problem4Strategy:
             for index, point in enumerate(probes)
             if index not in self.attempted_probes[channel]
         ]
+        adaptive_index = self.ADAPTIVE_PROBE_INDEX + sum(
+            1
+            for index in self.attempted_probes[channel]
+            if index >= self.ADAPTIVE_PROBE_INDEX
+        )
+        adaptive = self._cautious_probe_point(channel)
+        if adaptive is not None:
+            options.insert(0, (adaptive_index, adaptive))
         if len(options) <= 1 or not self.directional_block_points[channel]:
             return options
 
-        circle = self._circle(channel)
-        center = circle.center
-
-        def front_score(point: Point) -> float:
-            candidate_angle = math.atan2(point[1] - center[1], point[0] - center[0])
-            score = 0.0
-            for blocked in self.directional_block_points[channel]:
-                blocked_angle = math.atan2(blocked[1] - center[1], blocked[0] - center[0])
-                separation = abs(
-                    (candidate_angle - blocked_angle + math.pi)
-                    % (2.0 * math.pi)
-                    - math.pi
-                )
-                score += separation
-            return score
-
+        center = self._circle(channel).center
         reordered = sorted(
             options,
             key=lambda item: (
-                -front_score(item[1]),
+                -self._block_separation(channel, center, item[1]),
                 distance(self.robot.current_position, item[1]),
                 item[0],
             ),
