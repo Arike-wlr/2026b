@@ -2,7 +2,8 @@
 
 整体思路（与《问题三 机器人狗搜索、定位与清除算法编程规格》一致）：
 
-    七点确定性覆盖巡检  →  多点测向可行域  →  批量路径清除  →  小区域覆盖兜底
+    七点确定性覆盖巡检  →  全局收集  →  空间聚类  →  批次局部化
+    →  批次清除  →  动态“顺路”拦截  →  小区域覆盖兜底
 
 字典序目标：
 
@@ -68,10 +69,12 @@ SAFE_REGION_RADIUS = 58.0       # 两次清除法可行域半径上界 m
 
 # 策略内部可调参数
 GRID_SPACING = CLEAR_RADIUS * math.sqrt(2.0) * (1.0 - 1e-3)  # 保证网格覆盖 20 m 圆
-PROBE_FIRST_FORWARD = 750.0     # 第一组补测点：沿首测方向的偏移 m
-PROBE_FIRST_SIDE = 600.0        # 第一组补测点：垂直方向的偏移 m
+PROBE_FIRST_FORWARD = 600.0     # 第一组补测点：沿首测方向的偏移 m
+PROBE_FIRST_SIDE = 300.0        # 第一组补测点：垂直方向的偏移 m
 PROBE_STAGNATION_LIMIT = 3      # 连续多少次补测未缩小可行域就转网格兜底
 PROBE_MAX_PER_CHANNEL = 12      # 单频道补测次数上限
+REGION_CLUSTER_DISTANCE = 150.0  # 可行域中心小于该距离则归为同一空间批次
+OPPORTUNISTIC_MAX_DETOUR = 120.0  # 顺路清除允许增加的最大路程 m
 
 STATUS_UNKNOWN = "UNKNOWN"
 STATUS_DETECTED = "DETECTED"
@@ -158,6 +161,11 @@ class StrategyConfig:
     log_path: Optional[str] = None
     # 达到 16 个干扰源后可直接结束
     stop_at_source_count: int = SOURCE_COUNT_MAX
+    # Region Clustering：按可行域中心聚类，批次内连续局部化/清除，减少跨区域往返
+    region_cluster_distance: float = REGION_CLUSTER_DISTANCE
+    # Opportunistic Strike：移动途中若小半径目标几乎顺路，则立即清除
+    opportunistic_max_detour: float = OPPORTUNISTIC_MAX_DETOUR
+    opportunistic_enabled: bool = True
 
 
 # --------------------------------------------------------------------------- #
@@ -194,6 +202,7 @@ class Problem3Strategy:
             "move_distance": 0.0, "switch_count": 0,
             "probes": 0, "grid_clears": 0,
             "two_clear_used": 0, "grid_channels": 0,
+            "clusters": 0, "opportunistic_strikes": 0,
         }
 
     # -------------------------------------------------------------- 运行入口
@@ -370,10 +379,110 @@ class Problem3Strategy:
             if cs.status == STATUS_DETECTED and cs.feasible is not None
         ]
 
+    def _state_center(self, cs: ChannelState) -> np.ndarray:
+        if cs.center is not None:
+            return np.asarray(cs.center, dtype=float)
+        if cs.feasible is not None and len(cs.feasible) > 0:
+            return np.mean(cs.feasible, axis=0)
+        return np.asarray(self.robot.current_position, dtype=float)
+
+    def _cluster_center(self, cluster: List[ChannelState]) -> np.ndarray:
+        centers = [self._state_center(cs) for cs in cluster]
+        return np.mean(np.vstack(centers), axis=0)
+
+    def _cluster_channel_states(self, states: List[ChannelState]) -> List[List[ChannelState]]:
+        """Region Clustering：按当前可行域中心做贪心空间聚类。"""
+        clusters: List[List[ChannelState]] = []
+        ordered = sorted(states, key=lambda item: item.channel)
+        for cs in ordered:
+            center = self._state_center(cs)
+            best_index = None
+            best_distance = float("inf")
+            for index, cluster in enumerate(clusters):
+                cluster_center = self._cluster_center(cluster)
+                current_distance = math.hypot(
+                    center[0] - cluster_center[0],
+                    center[1] - cluster_center[1],
+                )
+                if current_distance < best_distance:
+                    best_distance = current_distance
+                    best_index = index
+            if best_index is not None and best_distance <= self.cfg.region_cluster_distance:
+                clusters[best_index].append(cs)
+            else:
+                clusters.append([cs])
+
+        start = np.asarray(self.robot.current_position, dtype=float)
+        clusters.sort(
+            key=lambda cluster: math.hypot(
+                self._cluster_center(cluster)[0] - start[0],
+                self._cluster_center(cluster)[1] - start[1],
+            )
+        )
+        self.stats["clusters"] = max(self.stats["clusters"], len(clusters))
+        return clusters
+
+    @staticmethod
+    def _point_segment_distance(point: np.ndarray, start: np.ndarray,
+                                end: np.ndarray) -> float:
+        segment = end - start
+        length_sq = float(np.dot(segment, segment))
+        if length_sq <= 1e-12:
+            return float(np.linalg.norm(point - start))
+        t = float(np.dot(point - start, segment) / length_sq)
+        t = max(0.0, min(1.0, t))
+        projection = start + t * segment
+        return float(np.linalg.norm(point - projection))
+
+    def _opportunistic_strike(self, target: np.ndarray,
+                              exclude_channel: Optional[int] = None) -> None:
+        """动态顺路拦截：去目标点前，顺手清除已经足够小的可行域。
+
+        只对 radius <= 20 m 的频道做单点清除，因此不会牺牲“保证清除”的确定性；
+        额外路程受 opportunistic_max_detour 限制，避免为了顺手反而绕远。
+        """
+        if not self.cfg.opportunistic_enabled or not self._time_left():
+            return
+
+        start = np.asarray(self.robot.current_position, dtype=float)
+        target = np.asarray(target, dtype=float)
+        candidates: List[Tuple[float, float, ChannelState]] = []
+        for cs in self._detected_pending():
+            if cs.channel == exclude_channel or cs.status == STATUS_CLEARED:
+                continue
+            if cs.radius is None or cs.radius > CLEAR_RADIUS or cs.center is None:
+                continue
+            center = np.asarray(cs.center, dtype=float)
+            detour = (
+                math.hypot(center[0] - start[0], center[1] - start[1])
+                + math.hypot(target[0] - center[0], target[1] - center[1])
+                - math.hypot(target[0] - start[0], target[1] - start[1])
+            )
+            segment_distance = self._point_segment_distance(center, start, target)
+            if detour <= self.cfg.opportunistic_max_detour:
+                candidates.append((detour, segment_distance, cs))
+
+        candidates.sort(key=lambda item: (item[0], item[1], item[2].channel))
+        for _, _, cs in candidates:
+            if not self._time_left() or cs.status == STATUS_CLEARED:
+                continue
+            if cs.center is None or cs.radius is None or cs.radius > CLEAR_RADIUS:
+                continue
+            center = np.asarray(cs.center, dtype=float)
+            res = self._clear(float(center[0]), float(center[1]), cs.channel,
+                              phase="OPPORTUNISTIC", cs=cs,
+                              note="opportunistic strike on route")
+            self.stats["opportunistic_strikes"] += 1
+            if res.cleared:
+                self._mark_cleared(cs)
+            else:
+                self._update_clear_failure(cs, center)
+
     def _phase_localize(self) -> None:
         for cs in self._detected_pending():
             self._recompute_enclosing(cs)
 
+        cluster_cursor = 0
         while self._time_left():
             if self.cleared_count >= self.cfg.stop_at_source_count:
                 break
@@ -385,22 +494,50 @@ class Problem3Strategy:
             if not candidates:
                 break
 
-            robot_pos = np.asarray(self.robot.current_position, dtype=float)
-            best = None  # (cost, cs, point, kind)
-            for cs in candidates:
-                plan = self._next_probe(cs, robot_pos)
-                if plan is None:
-                    cs.grid_mode = True
-                    continue
-                point, kind = plan
-                cost = self.robot.estimate_move_time(float(point[0]), float(point[1]))
-                if best is None or cost < best[0]:
-                    best = (cost, cs, point, kind)
-            if best is None:
+            clusters = self._cluster_channel_states(candidates)
+            if not clusters:
                 break
 
-            _, cs, point, kind = best
-            self._execute_probe(cs, point, kind)
+            progress = False
+            cluster_targets = [self._cluster_center(cluster) for cluster in clusters]
+            start = np.asarray(self.robot.current_position, dtype=float)
+            cluster_order = nearest_neighbor_route(start, cluster_targets)
+            if cluster_order:
+                shift = cluster_cursor % len(cluster_order)
+                cluster_order = cluster_order[shift:] + cluster_order[:shift]
+                cluster_cursor += 1
+
+            for cluster_index in cluster_order:
+                cluster = clusters[cluster_index]
+                cluster_candidates = [
+                    cs for cs in cluster
+                    if cs.status == STATUS_DETECTED
+                    and cs.radius is not None
+                    and cs.radius > self.cfg.safe_region_radius
+                    and not cs.grid_mode
+                    and cs.probe_count < PROBE_MAX_PER_CHANNEL
+                ]
+                if not cluster_candidates or not self._time_left():
+                    continue
+                robot_pos = np.asarray(self.robot.current_position, dtype=float)
+                best = None  # (cost, cs, point, kind)
+                for cs in cluster_candidates:
+                    plan = self._next_probe(cs, robot_pos)
+                    if plan is None:
+                        cs.grid_mode = True
+                        continue
+                    point, kind = plan
+                    cost = self.robot.estimate_move_time(float(point[0]), float(point[1]))
+                    if best is None or cost < best[0]:
+                        best = (cost, cs, point, kind)
+                if best is None:
+                    continue
+                _, cs, point, kind = best
+                self._opportunistic_strike(point, exclude_channel=cs.channel)
+                self._execute_probe(cs, point, kind)
+                progress = True
+            if not progress:
+                break
 
     def _next_probe(self, cs: ChannelState,
                     robot_pos: np.ndarray) -> Optional[Tuple[np.ndarray, str]]:
@@ -408,7 +545,7 @@ class Problem3Strategy:
         if cs.first_direction is None:
             return None
 
-        # 第一组：以首次测向位置 S 和方向 u 构造 +750u±600v 两点，先近后远
+        # 第一组：以首次测向位置 S 和方向 u 构造较近的 +forward*u±side*v 两点
         if not cs.probe_plan and cs.probe_count < 2:
             S, u = cs.first_direction
             v = perpendicular_left(u)
@@ -487,36 +624,94 @@ class Problem3Strategy:
         if not pending:
             return
 
-        # 为每个频道准备清除目标，供路径优化使用
-        targets: List[np.ndarray] = []
         for cs in pending:
             if cs.enclosing is None:
                 self._recompute_enclosing(cs)
-            if cs.enclosing is None:
-                # 可行域退化（理论上不会发生），原地兜底清除
-                targets.append(np.asarray(self.robot.current_position, dtype=float))
-            elif cs.radius <= self.cfg.safe_region_radius:
-                targets.append(cs.center.copy())
-            else:
-                cs.grid_mode = True
-                self.stats["grid_channels"] += 1
-                grid = grid_cover_points(cs.feasible, GRID_SPACING)
-                cs.grid_plan = self._order_grid(grid)  # type: ignore[attr-defined]
-                targets.append(np.asarray(cs.grid_plan[0], dtype=float))  # type: ignore[attr-defined]
-
-        start = np.asarray(self.robot.current_position, dtype=float)
-        order = nearest_neighbor_route(start, targets)
-        order = two_opt_open(order, start, targets)
-
-        for idx in order:
-            if not self._time_left():
-                break
-            if self.cleared_count >= self.cfg.stop_at_source_count:
-                break
-            cs = pending[idx]
-            if cs.status == STATUS_CLEARED:
+            if cs.enclosing is not None and cs.radius is not None:
                 continue
-            self._clear_channel(cs)
+            # 可行域退化（理论上不会发生），留给网格/当前点兜底
+            cs.grid_mode = True
+
+        cluster_cursor = 0
+        while self._time_left():
+            pending = [
+                cs for cs in self._detected_pending()
+                if cs.status != STATUS_CLEARED and cs.feasible is not None
+            ]
+            if not pending or self.cleared_count >= self.cfg.stop_at_source_count:
+                break
+
+            clusters = self._cluster_channel_states(pending)
+            cluster_targets = [self._cluster_center(cluster) for cluster in clusters]
+            start = np.asarray(self.robot.current_position, dtype=float)
+            cluster_order = nearest_neighbor_route(start, cluster_targets)
+            if cluster_order:
+                shift = cluster_cursor % len(cluster_order)
+                cluster_order = cluster_order[shift:] + cluster_order[:shift]
+                cluster_cursor += 1
+
+            progressed = False
+            for cluster_index in cluster_order:
+                if not self._time_left():
+                    break
+                if self.cleared_count >= self.cfg.stop_at_source_count:
+                    break
+                cluster = clusters[cluster_index]
+                batch = [
+                    cs for cs in cluster
+                    if cs.status != STATUS_CLEARED and cs.feasible is not None
+                ]
+                if not batch:
+                    continue
+
+                targets = [self._clear_target(cs) for cs in batch]
+                start = np.asarray(self.robot.current_position, dtype=float)
+                order = nearest_neighbor_route(start, targets)
+                if not order:
+                    continue
+                idx = order[0]
+                cs = batch[idx]
+                self._opportunistic_strike(targets[idx], exclude_channel=cs.channel)
+                progressed = self._clear_step(cs) or progressed
+
+            if not progressed:
+                break
+
+    def _clear_target(self, cs: ChannelState) -> np.ndarray:
+        if cs.enclosing is None:
+            self._recompute_enclosing(cs)
+        if cs.enclosing is None:
+            return np.asarray(self.robot.current_position, dtype=float)
+        if cs.radius is not None and cs.radius <= self.cfg.safe_region_radius:
+            return cs.center.copy()
+        if not cs.grid_mode:
+            cs.grid_mode = True
+            self.stats["grid_channels"] += 1
+        grid = getattr(cs, "grid_plan", None)
+        if not grid:
+            grid = grid_cover_points(cs.feasible, GRID_SPACING)
+            cs.grid_plan = self._order_grid(grid)  # type: ignore[attr-defined]
+        grid = getattr(cs, "grid_plan", None)
+        if grid:
+            return np.asarray(grid[0], dtype=float)
+        return np.asarray(self.robot.current_position, dtype=float)
+
+    def _clear_step(self, cs: ChannelState) -> bool:
+        if cs.status == STATUS_CLEARED:
+            return False
+        if cs.enclosing is None or cs.radius is None:
+            return self._grid_clear_step(cs)
+
+        if cs.radius <= CLEAR_RADIUS:
+            if self._single_clear(cs):
+                return True
+            self._update_clear_failure(cs, cs.center)
+            return self._grid_clear_step(cs)
+
+        if cs.radius <= self.cfg.safe_region_radius:
+            return self._two_clear(cs)
+
+        return self._grid_clear_step(cs)
 
     def _order_grid(self, grid: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
         """蛇形网格按“离机器人较近的一端”起步。"""
@@ -616,9 +811,30 @@ class Problem3Strategy:
             self._update_clear_failure(cs, np.asarray(point, dtype=float))
         return False
 
+    def _grid_clear_step(self, cs: ChannelState) -> bool:
+        """网格兜底的轮转版：每次只清一个网格点，避免单频道长时间霸占。"""
+        if cs.feasible is None or not self._time_left():
+            return False
+        grid = getattr(cs, "grid_plan", None)
+        if not grid:
+            grid = self._order_grid(grid_cover_points(cs.feasible, GRID_SPACING))
+            cs.grid_plan = grid  # type: ignore[attr-defined]
+        if not grid:
+            return False
+
+        point = grid.pop(0)
+        res = self._clear(float(point[0]), float(point[1]), cs.channel,
+                          phase="GRID", cs=cs, note="grid cover step")
+        self.stats["grid_clears"] += 1
+        if res.cleared:
+            self._mark_cleared(cs)
+            return True
+        self._update_clear_failure(cs, np.asarray(point, dtype=float))
+        return True
+
     # ---------------------------------------------------------------- 统计
     def _summary(self) -> Dict[str, object]:
-        detected = sum(1 for cs in self.channels.values() if cs.status == STATUS_DETECTED)
+        detected = sum(1 for cs in self.channels.values() if cs.status in (STATUS_DETECTED, STATUS_CLEARED))
         cleared = sum(1 for cs in self.channels.values() if cs.status == STATUS_CLEARED)
         empty = sum(1 for cs in self.channels.values() if cs.status == STATUS_EMPTY)
         unknown = sum(1 for cs in self.channels.values() if cs.status == STATUS_UNKNOWN)
@@ -637,7 +853,7 @@ class Problem3Strategy:
             "cleared": cleared,
             "empty_certified": empty,
             "unknown": unknown,
-            "all_resolved": detected == 0 and unknown == 0,
+            "all_resolved": cleared + empty == len(self.channels) and unknown == 0,
             "virtual_time_s": total_virtual,
             "virtual_time_min": total_virtual / 60.0,
             "move_time_s": move_time,
