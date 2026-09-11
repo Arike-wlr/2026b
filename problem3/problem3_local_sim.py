@@ -335,6 +335,7 @@ def run_batch(cases: int, seed: int, verbose_every: int = 0,
         "avg_opportunistic": mean("opportunistic_strikes"),
         "avg_empty_pruned": mean("empty_pruned"),
         "avg_survey_skipped_empty": mean("survey_skipped_empty"),
+        "avg_clipped_to_clear": mean("clipped_to_clear"),
         "results": results,
     }
     return report
@@ -375,7 +376,16 @@ def write_report(report: Dict[str, object], path: str) -> None:
         f"| 顺路清除次数 | {float(report['avg_opportunistic']):.1f} |",
         f"| 空频道剪枝数 | {float(report['avg_empty_pruned']):.1f} |",
         f"| 巡检跳过空/已清频道次数 | {float(report['avg_survey_skipped_empty']):.1f} |",
+        f"| 几何裁剪直接入清除队列次数 | {float(report['avg_clipped_to_clear']):.1f} |",
         f"| 网格兜底清除次数 | {float(report['avg_grid_clears']):.1f} |",
+        "",
+        "## 安全剪枝说明",
+        "",
+        "几何裁剪直接入清除队列是基于 no_signal 半平面约束的安全剪枝：",
+        "当一次无信号检测把该频道可行域裁剪到最小外接圆半径不超过安全半径时，",
+        "后续不再继续补测该频道，而是交由全局 TSP 调度进入清除队列。",
+        "该判断只收缩已被几何约束证明的可行域，不排除任何仍可能存在干扰源的位置，",
+        "因此不损失最优性。",
         "",
     ]
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)

@@ -36,8 +36,8 @@ from problem3_strategy import (  # noqa: E402
     MAX_RECEIVE_RADIUS,
     MIN_RECEIVE_RADIUS,
     NEAR_RADIUS,
-    PROBE_BACKUP_FORWARD,
-    PROBE_BACKUP_SIDE,
+    PROBE_FAR_BACKUP_FORWARD,
+    PROBE_FAR_BACKUP_SIDE,
     PROBE_FORWARD_RATIO,
     PROBE_R_EST_MAX,
     PROBE_R_EST_MIN,
@@ -157,7 +157,7 @@ class TestBearing(unittest.TestCase):
         self.assertLessEqual(r_est, PROBE_R_EST_MAX)
 
     def test_backup_probe_points_always_receivable(self) -> None:
-        # 备用补测点承担全距离接收保证：首次测向位置 S、真实距离 r∈(5,1500]、
+        # 远备用补测点承担全距离接收保证：首次测向位置 S、真实距离 r∈(5,1500]、
         # 测向误差 e∈[-1°,1°] 时，Q_plus / Q_minus 到干扰源的最坏距离必须 < 1000 m。
         worst = 0.0
         for r in np.linspace(NEAR_RADIUS + 1e-6, MAX_RECEIVE_RADIUS, 400):
@@ -167,7 +167,10 @@ class TestBearing(unittest.TestCase):
                 v = np.array([-u[1], u[0]])
                 source = np.array([r, 0.0])          # 真实方向取 +x
                 for sign in (1.0, -1.0):
-                    Q = (PROBE_BACKUP_FORWARD * u + sign * PROBE_BACKUP_SIDE * v)
+                    Q = (
+                        PROBE_FAR_BACKUP_FORWARD * u
+                        + sign * PROBE_FAR_BACKUP_SIDE * v
+                    )
                     worst = max(worst, float(np.hypot(*(source - Q))))
         self.assertLess(worst, MIN_RECEIVE_RADIUS)
 

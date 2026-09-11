@@ -1,10 +1,5 @@
 """问题 3：机器狗自动搜索、定位与清除策略。
 
-整体思路（与《问题三 机器人狗搜索、定位与清除算法编程规格》一致）：
-
-    七点确定性覆盖巡检  →  全局收集  →  空间聚类  →  批次局部化
-    →  批次清除  →  动态“顺路”拦截  →  小区域覆盖兜底
-
 字典序目标：
 
 1. 保证所有合法情况下都不漏检，并最终清除全部干扰源；
@@ -76,8 +71,10 @@ PROBE_R_EST_MAX = 800.0         # 动态拉偏：目标距离估计上限
 PROBE_SIDE_RATIO = 0.6          # 动态拉偏：侧向偏移比例，兼顾交会角与移动距离
 PROBE_SIDE_MAX = 350.0          # 动态拉偏：侧向偏移上限
 PROBE_FORWARD_RATIO = 0.5       # 动态拉偏：前向跟进比例
-PROBE_BACKUP_FORWARD = 600.0    # 远距离目标的接收保证备用补测点
-PROBE_BACKUP_SIDE = 300.0
+PROBE_BACKUP_FORWARD = 350.0    # 短距离备用补测点，避免动态拉偏失败后过早大步长外跑
+PROBE_BACKUP_SIDE = 200.0
+PROBE_FAR_BACKUP_FORWARD = 600.0  # 全距离接收保证备用补测点
+PROBE_FAR_BACKUP_SIDE = 300.0
 PROBE_STAGNATION_LIMIT = 3      # 连续多少次补测未缩小可行域就转网格兜底
 PROBE_MAX_PER_CHANNEL = 12      # 单频道补测次数上限
 REGION_CLUSTER_DISTANCE = 150.0  # 可行域中心小于该距离则归为同一空间批次
@@ -221,6 +218,7 @@ class Problem3Strategy:
             "clusters": 0, "opportunistic_strikes": 0,
             "shared_measures": 0,
             "empty_pruned": 0, "survey_skipped_empty": 0,
+            "clipped_to_clear": 0,
         }
 
     # -------------------------------------------------------------- 运行入口
@@ -329,6 +327,7 @@ class Problem3Strategy:
         """no_signal：记录排除盘；若此前有信号点，则加入保守线性半平面。"""
         cs.exclusions.append((float(S[0]), float(S[1]), MIN_RECEIVE_RADIUS))
         if cs.feasible is not None and cs.first_direction is not None:
+            before_radius = cs.radius
             signal_point, _ = cs.first_direction
             q = np.asarray(S, dtype=float)
             p = np.asarray(signal_point, dtype=float)
@@ -343,6 +342,12 @@ class Problem3Strategy:
                 rhs,
             )
             self._recompute_enclosing(cs)
+            if (
+                (before_radius is None or before_radius > self.cfg.safe_region_radius)
+                and cs.radius is not None
+                and cs.radius <= self.cfg.safe_region_radius
+            ):
+                self.stats["clipped_to_clear"] += 1
 
     def _update_clear_failure(self, cs: ChannelState, C: np.ndarray) -> None:
         cs.exclusions.append((float(C[0]), float(C[1]), CLEAR_RADIUS))
@@ -585,26 +590,11 @@ class Problem3Strategy:
         ]
 
     def _edge_cost(self, start: np.ndarray, end: np.ndarray,
-                   ready_clear_points: List[np.ndarray]) -> float:
-        distance_cost = float(np.linalg.norm(end - start))
-        if not self.cfg.opportunistic_enabled:
-            return distance_cost
-
-        bonus = 0.0
-        for point in ready_clear_points:
-            if np.linalg.norm(point - end) < 1e-6:
-                continue
-            detour = (
-                float(np.linalg.norm(point - start))
-                + float(np.linalg.norm(end - point))
-                - distance_cost
-            )
-            if detour <= self.cfg.opportunistic_max_detour:
-                bonus += self.cfg.opportunistic_max_detour - detour
-        return max(0.0, distance_cost - 0.65 * bonus)
+                   _ready_clear_points: List[np.ndarray]) -> float:
+        return float(np.linalg.norm(end - start))
 
     def _tsp_task_order(self, tasks: List[RouteTask]) -> List[int]:
-        """带顺路收益的开放 TSP；小任务集用 Held-Karp 精确求解。"""
+        """以欧氏距离为边权的开放 TSP；小任务集用 Held-Karp 精确求解。"""
         if not tasks:
             return []
         if len(tasks) <= TSP_EXACT_LIMIT:
@@ -768,13 +758,20 @@ class Problem3Strategy:
             S + PROBE_BACKUP_FORWARD * u + PROBE_BACKUP_SIDE * v,
             S + PROBE_BACKUP_FORWARD * u - PROBE_BACKUP_SIDE * v,
         ]
+        far_backup_points = [
+            S + PROBE_FAR_BACKUP_FORWARD * u + PROBE_FAR_BACKUP_SIDE * v,
+            S + PROBE_FAR_BACKUP_FORWARD * u - PROBE_FAR_BACKUP_SIDE * v,
+        ]
         q2_points.sort(
             key=lambda point: math.hypot(point[0] - robot_pos[0], point[1] - robot_pos[1])
         )
         backup_points.sort(
             key=lambda point: math.hypot(point[0] - robot_pos[0], point[1] - robot_pos[1])
         )
-        points = q2_points + backup_points
+        far_backup_points.sort(
+            key=lambda point: math.hypot(point[0] - robot_pos[0], point[1] - robot_pos[1])
+        )
+        points = q2_points + backup_points + far_backup_points
         return [np.asarray(point, dtype=float) for point in points]
 
     def _peek_probe(self, cs: ChannelState,
@@ -782,7 +779,7 @@ class Problem3Strategy:
         if cs.first_direction is None:
             return None
 
-        if not cs.probe_plan and cs.probe_count < 4:
+        if not cs.probe_plan and cs.probe_count < 6:
             cs.probe_plan = self._build_q2_probe_plan(cs, robot_pos)
 
         if cs.probe_plan:
