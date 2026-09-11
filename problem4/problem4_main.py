@@ -97,7 +97,12 @@ def main() -> None:
     print("=" * 64)
     print("问题4 运行结果")
     print("=" * 64)
-    print(f"巡检点：{summary['survey_station_count']} 个（圆心 + 内外两圈各 12 点）")
+    print(
+        f"巡检点：实际访问 {summary['survey_station_count']}/"
+        f"{summary['survey_planned_station_count']} 个"
+        "（圆心 + 内外两圈各 12 点）"
+    )
+    print(f"巡检-清除联合滚动调度：{summary['dynamic_survey_route']}")
     print(f"干扰源：检测到 {measured} 个，已清除 {cleared} 个")
     directional = list(summary["confirmed_directional_channels"])
     others = list(summary["not_confirmed_directional_channels"])

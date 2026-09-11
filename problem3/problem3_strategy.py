@@ -12,6 +12,12 @@
     current_position / current_channel / virtual_time_s / remaining_real_s
     is_time_up(margin_s) / estimate_move_time(x, y) / in_session
 
+本模块提供两套可互换的策略：
+
+* ``Problem3Strategy``：固定七点巡检 + 全局动态任务池，只依赖 numpy；
+* ``CoverageStrategy``：实际覆盖地图 + 联合行程规划 + 同点共享定位 + 补盲位置区域选点，
+  需要 ``shapely``（未安装时仅该类不可用，基础策略不受影响）。
+
 本模块不做任何 HTTP，可在没有模拟器时用本地仿真完整跑通。
 """
 
@@ -42,6 +48,19 @@ from problem3_geometry import (
     two_opt_open,
     unit_from_deg,
 )
+
+# 覆盖地图策略（CoverageStrategy）需要 shapely 做精确的多边形差集/并集运算。
+# 这里做可选导入：没装 shapely 时，基础 Problem3Strategy 仍然可以正常使用。
+try:  # pragma: no cover - 取决于运行环境
+    from shapely.geometry import LineString, Point, Polygon
+    from shapely.ops import nearest_points, unary_union
+
+    SHAPELY_AVAILABLE = True
+except ImportError:  # noqa: BLE001 - 缺少 shapely 不是致命错误
+    LineString = Point = Polygon = None  # type: ignore[assignment]
+    nearest_points = unary_union = None  # type: ignore[assignment]
+    SHAPELY_AVAILABLE = False
+
 
 # --------------------------------------------------------------------------- #
 # 题面常量
@@ -1062,3 +1081,439 @@ class Problem3Strategy:
             "avg_clear_time_s": (total_virtual / cleared) if cleared else None,
             "stats": dict(self.stats),
         }
+
+
+# --------------------------------------------------------------------------- #
+# 覆盖地图策略（CoverageStrategy）
+#
+# 从 problem3/q3_practice_single.py 内嵌的 coverage_strategy 模块移植而来。
+# 与基础 Problem3Strategy 的固定“七点巡检 + 目标调度”相比，这里的结构性改进是：
+#
+# 1. 实际覆盖地图：每个频道单独保存“目标圆域外包多边形 − 已检测接收圆内接多边形”的
+#    剩余区域，只在剩余几何集合真正为空（或已确认 16 个频道有源）时才判空，
+#    不再用“七点都被扫过”这种对具体路径敏感的判据；
+# 2. 联合行程规划：把已发现目标的补测点、清除点与动态补盲任务放进同一个任务池，
+#    做最近邻 + 2-opt 开路排序，未来覆盖只用于规划、执行一次动作后立即重算；
+# 3. 同点共享定位：一个停靠点顺带为其他已发现频道补测，避免反复回到各自首个测点；
+# 4. 接近后侧移：先朝估计目标靠近再取侧向视差，替代一开始就大幅横移；
+# 5. 补盲位置区域：对剩余连通区域求包围圆，构造“任意位置都能覆盖它”的检测区域，
+#    再选贴近既有路线的位置，而不是绑定到固定网格点；
+# 6. 选择扫描：普通停靠扫描只在高增益时才顺带测，强制补盲不受该门槛限制。
+#
+# 本类保留了完整的失败显式化：时间不足、可行域退化、有限网格用尽都会直接抛错，
+# 而不是悄悄返回一个未完成的“成功”结果。
+# --------------------------------------------------------------------------- #
+def reception(point):
+    """检测点(point)的实际接收区域：半径略小于 1000 m 的内接多边形。
+
+    Shapely buffer 的顶点落在 999.99 m 圆上，因此用它做差集永远不会越界
+    排除真实干扰源（真实接收半径 ≥ 1000 m）。
+    """
+    return Point(float(point[0]), float(point[1])).buffer(999.99, quad_segs=32)
+
+
+class ChannelCoverage:
+    """单个频道仍未被任何检测覆盖的剩余区域（实际覆盖地图）。"""
+
+    def __init__(self):
+        self.domain = Polygon(circumscribed_polygon((0, 0), 1800.00001, n=256))
+        self.remaining = {ch: self.domain for ch in range(CHANNEL_MIN, CHANNEL_MAX + 1)}
+        self.observations = {ch: [] for ch in range(CHANNEL_MIN, CHANNEL_MAX + 1)}
+
+    def record(self, channel, point, result):
+        self.observations[channel].append((tuple(map(float, point)), result))
+        # 即使检测到了信号，这次检测的实际覆盖范围也已经确定；该频道后续交给
+        # 目标定位状态机处理，不再依赖覆盖地图判空。
+        self.remaining[channel] = self.remaining[channel].difference(reception(point))
+
+    def gain(self, channel, point):
+        return self.remaining[channel].intersection(reception(point)).area
+
+    def complete(self, channel):
+        # 绝不用“剩余面积很小”当判空证书。
+        return self.remaining[channel].is_empty
+
+
+@dataclass
+class MapConfig:
+    """覆盖地图策略的运行档位与阈值。"""
+
+    mode: str = "route_joint_regions_selective_approach"
+    scan_gain: float = 350000.0
+    max_probes: int = 10
+    max_actions: int = 1200
+    side: float = 100.0
+
+
+@dataclass
+class Task:
+    """覆盖地图策略的单个待执行任务（search / probe / clear / grid）。"""
+
+    kind: str
+    point: np.ndarray
+    channel: int = 0
+
+
+class CoverageStrategy(Problem3Strategy):
+    """基于实际覆盖地图 + 联合行程规划的滚动策略。
+
+    用法与 ``Problem3Strategy`` 相同，只是多一个 ``map_config``::
+
+        strategy = CoverageStrategy(robot, StrategyConfig(bearing_error_deg=1.01),
+                                    MapConfig(mode="route_joint_regions_selective_approach"))
+        summary = strategy.run()
+    """
+
+    def __init__(self, robot, config=None, map_config=None):
+        if not SHAPELY_AVAILABLE:
+            raise ImportError(
+                'CoverageStrategy 需要 shapely：python -m pip install "shapely>=2.0"'
+            )
+        super().__init__(robot, config or StrategyConfig(bearing_error_deg=1.01))
+        self.mc = map_config or MapConfig()
+        self.map = ChannelCoverage()
+        self.used = {ch: [] for ch in self.channels}
+        self.decisions = []
+        self.search_stops = 0
+        self.piggyback_measures = 0
+        self.piggyback_area = 0.0
+        self._grid_cache = {}
+        # 候选扫描点：四个半径 × 24 个方向，用于快速挑“覆盖收益最大的补盲位置”。
+        self.pool = [np.array([r * math.cos(a), r * math.sin(a)])
+                     for r in (650, 1000, 1250, 1500) for a in np.arange(24) * math.pi / 12]
+        self.pool_disks = [reception(p) for p in self.pool]
+
+    # -------------------------------------------------------- 动作包装与预算
+    def _measure(self, x, y, channel, phase, cs=None, note=''):
+        self._check_action_budget(x, y, 6)
+        res = super()._measure(x, y, channel, phase, cs, note)
+        self.map.record(channel, (x, y), res.result)
+        self.used[channel].append(np.array([x, y]))
+        return res
+
+    def _clear(self, x, y, channel, phase, cs=None, note=''):
+        self._check_action_budget(x, y, 5)
+        return super()._clear(x, y, channel, phase, cs, note)
+
+    def _check_action_budget(self, x, y, action_s):
+        if not self._time_left():
+            raise RuntimeError('Insufficient real or virtual time')
+        limit = getattr(self.robot, 'max_virtual_duration_s', 360000)
+        if limit is not None and \
+                self.robot.virtual_time_s + self.robot.estimate_move_time(x, y) + action_s >= limit:
+            raise RuntimeError('Next action exceeds virtual-time budget')
+
+    def _recompute_enclosing(self, cs):
+        # 不丢弃“很小但仍合法”的可行域；同时独立地把半径放大到包含每个多边形的顶点，
+        # 这样即使最小包围圆有舍入误差，也不会漏掉可行域边界上的点。
+        if cs.feasible is None or len(cs.feasible) == 0:
+            raise RuntimeError('Empty feasible region; completion cannot be certified')
+        c, r = min_enclosing_circle(cs.feasible)
+        r = max(r, float(np.max(np.linalg.norm(cs.feasible - c, axis=1)))) + 1e-6
+        cs.enclosing = (c, r)
+
+    # ------------------------------------------------------------ 判空与扫描
+    def certify(self):
+        upper = self._known_source_count() == SOURCE_COUNT_MAX
+        for ch, cs in self.channels.items():
+            if cs.status == STATUS_UNKNOWN and (upper or self.map.complete(ch)):
+                self._mark_empty(
+                    cs,
+                    '%d known sources' % SOURCE_COUNT_MAX if upper
+                    else 'actual per-channel coverage complete',
+                )
+
+    def unknown(self):
+        return [ch for ch, s in self.channels.items() if s.status == STATUS_UNKNOWN]
+
+    def sense(self, ch, p, phase):
+        """对一个频道做一次检测并按结果更新状态机。"""
+        cs = self.channels[ch]
+        res = self._measure(*map(float, p), ch, phase, cs)
+        if res.result == 'direction':
+            cs.status = STATUS_DETECTED
+            self._update_direction(cs, p, float(res.svd_deg))
+        elif res.result == 'near':
+            cs.status = STATUS_DETECTED
+            self._update_near(cs, p)
+            if not self._single_clear(cs):
+                raise RuntimeError('near clear failed')
+        elif res.result == 'no_signal':
+            self._update_no_signal(cs, p)
+        else:
+            raise RuntimeError('Invalid measurement result')
+        self.certify()
+        return res
+
+    def scan(self, p, force=False):
+        """在位置 p 对仍未知的频道做一轮扫描。
+
+        ``force=True`` 是计划内的补盲扫描（每个增益 > 0 的频道都测）；
+        ``force=False`` 是顺路搭车（只在增益达到门槛时才测）。
+        """
+        current = self.robot.current_channel
+        # 优先使用当前所在频道，省一次 1 秒切频。
+        order = sorted(self.unknown(), key=lambda ch: (ch != current, ch))
+        changed = False
+        for ch in order:
+            if self.channels[ch].status != STATUS_UNKNOWN:
+                continue
+            if not self._time_left():
+                raise RuntimeError('Time exhausted during scan')
+            gain = self.map.gain(ch, p)
+            threshold = 1000000.0 if 'selective' in self.mc.mode else self.mc.scan_gain
+            if gain <= 0 or (not force and gain < threshold):
+                continue
+            self.sense(ch, p, 'SEARCH' if force else 'PIGGYBACK')
+            if not force:
+                self.piggyback_measures += 1
+                self.piggyback_area += gain
+            changed = True
+        if changed and force:
+            self.search_stops += 1
+        return changed
+
+    # ------------------------------------------------------------ 任务与路由
+    def remaining_shape(self):
+        return unary_union([self.map.remaining[ch] for ch in self.unknown()])
+
+    def search_point(self, need):
+        """在候选池里选覆盖收益最大的补盲位置（并列时取离当前位置最近的）。"""
+        if need.is_empty:
+            return None
+        pos = np.array(self.robot.current_position)
+        gains = np.array([need.intersection(d).area for d in self.pool_disks])
+        best = float(gains.max())
+        if best > 1e-8:
+            ids = np.flatnonzero(gains >= (0.99 if 'joint' in self.mc.mode else 0.65) * best)
+            idx = min(ids, key=lambda j: float(np.linalg.norm(self.pool[j] - pos)))
+            return self.pool[int(idx)].copy()
+        # 处理任意细小的盲区条带，同时不会错误地宣布“已覆盖完成”。
+        p = need.representative_point()
+        return np.array([p.x, p.y])
+
+    def local_point(self, cs):
+        """已发现目标的下一个补测点：先靠近估计位置，再取侧向视差。"""
+        pos = np.array(self.robot.current_position)
+        if self.mc.mode.endswith('approach') or self.mc.mode in ('nn_approach', 'hex_online'):
+            # 先朝估计目标靠近再取侧向视差：小的横向分量比一开始就大幅绕行更省时间。
+            c = cs.center
+            vec = c - pos
+            d = np.linalg.norm(vec)
+            u = vec / d if d > 1e-6 else cs.first_direction[1]
+            n = np.array([-u[1], u[0]])
+            h = min(self.mc.side, max(30, cs.radius * 0.2))
+            candidates = [c + h * n, c - h * n]
+            if cs.probe_count >= 3:
+                candidates += self._build_q2_probe_plan(cs, pos)
+        else:
+            candidates = self._build_q2_probe_plan(cs, pos)
+        # 不重复使用该频道已经测过的位置（否则拿不到新的交会角）。
+        candidates = [p for p in candidates
+                      if all(np.linalg.norm(p - q) > 1 for q in self.used[cs.channel])]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda p: float(np.linalg.norm(p - pos)))
+
+    def target_tasks(self):
+        """所有已发现目标的清除/补测/网格任务。"""
+        tasks = []
+        for ch, cs in self.channels.items():
+            if cs.status != STATUS_DETECTED:
+                continue
+            if cs.radius is None:
+                raise RuntimeError('Detected source has no enclosing region')
+            if cs.radius <= self.cfg.safe_region_radius:
+                tasks.append(Task('clear', cs.center.copy(), ch))
+            elif cs.probe_count < self.mc.max_probes:
+                p = self.local_point(cs)
+                tasks.append(Task('probe', p, ch) if p is not None
+                             else Task('grid', cs.center.copy(), ch))
+            else:
+                tasks.append(Task('grid', cs.center.copy(), ch))
+        return tasks
+
+    def planned_searches(self, tasks):
+        """把“未来还要补的盲区”折算成若干顺路补盲任务。
+
+        注意：这里只是规划用的启发式估计，不是地图更新、更不能当判空证书；
+        真正执行一次动作后预测全部丢弃并重算。
+        """
+        need = self.remaining_shape()
+        if self.mc.mode.startswith('route'):
+            for t in tasks:
+                need = need.difference(reception(t.point))
+                if t.kind == 'probe':
+                    need = need.difference(reception(self.channels[t.channel].center))
+        searches = []
+        for _ in range(12):
+            if need.is_empty:
+                break
+            p = (self.region_search_point(need, tasks + searches)
+                 if 'regions' in self.mc.mode else self.search_point(need))
+            searches.append(Task('search', p))
+            updated = need.difference(reception(p))
+            if updated.equals(need):
+                raise RuntimeError('No coverage progress')
+            need = updated
+        return searches
+
+    def region_search_point(self, need, tasks):
+        """把一整块残余盲区当成一个整体来选择检测位置区域，再挑贴近既有路线的点。
+
+        这改变的是补盲任务本身，而不只是任务之间的访问顺序。
+        """
+        pieces = list(need.geoms) if hasattr(need, 'geoms') else [need]
+        piece = max(pieces, key=lambda g: g.area)
+        if 'batch' in self.mc.mode:
+            # 几块不相连的盲区可能被同一个接收圆一并覆盖：先尝试合并。
+            for other in sorted(pieces, key=lambda g: g.distance(piece)):
+                if other.equals(piece):
+                    continue
+                combined = piece.union(other)
+                h = combined.convex_hull
+                if h.geom_type != 'Polygon':
+                    continue
+                vv = np.array(h.exterior.coords)[:-1]
+                cc, rr = min_enclosing_circle(vv)
+                rr = max(rr, float(np.max(np.linalg.norm(vv - cc, axis=1))))
+                if rr < 995:
+                    piece = combined
+        hull = piece.convex_hull
+        if hull.geom_type != 'Polygon':
+            return self.search_point(need)
+        vertices = np.array(hull.exterior.coords)[:-1]
+        c, r = min_enclosing_circle(vertices)
+        r = max(r, float(np.max(np.linalg.norm(vertices - c, axis=1)))) + 0.001
+        # 内接接收多边形的内切半径约 999.689 m，这里留出余量。
+        # 若盲区被 B(C, R) 包含且 R < 995，则 B(C, 999.5-R) 内任意检测位置都能覆盖它。
+        if r < 995:
+            allowed = Point(*c).buffer(999.5 - r, quad_segs=24)
+            pts = [np.asarray(self.robot.current_position)] + [t.point for t in tasks]
+            if len(pts) > 2:
+                order = nearest_neighbor_route(pts[0], pts[1:])
+                order = two_opt_open(order, pts[0], pts[1:])
+                pts = [pts[0]] + [pts[j + 1] for j in order]
+            path = LineString(pts) if len(pts) > 1 else Point(*pts[0])
+            q = nearest_points(allowed, path)[0]
+            return np.array([q.x, q.y])
+        return self.search_point(need)
+
+    def choose(self):
+        """选出下一个要执行的任务：任务池排序后取第一个。"""
+        tasks = self.target_tasks()
+        if self.mc.mode.startswith('route'):
+            tasks += self.planned_searches(tasks)
+            if not tasks:
+                return None
+            points = [t.point for t in tasks]
+            route = nearest_neighbor_route(self.robot.current_position, points)
+            route = two_opt_open(route, self.robot.current_position, points)
+            return tasks[route[0]]
+        p = self.search_point(self.remaining_shape()) if self.unknown() else None
+        if p is not None:
+            tasks.append(Task('search', p))
+        if not tasks:
+            return None
+        pos = np.array(self.robot.current_position)
+
+        def cost(t):
+            action = (5 * len(self.unknown()) + max(0, len(self.unknown()) - 1)
+                      if t.kind == 'search' else 6)
+            return np.linalg.norm(t.point - pos) / 5 + action
+
+        return min(tasks, key=cost)
+
+    def execute(self, t):
+        """执行一个任务，并在结束后做顺路搭车扫描与共享定位。"""
+        self.decisions.append(dict(kind=t.kind, point=t.point.tolist(), channel=t.channel,
+                                   time_s=self.robot.virtual_time_s,
+                                   unknown=len(self.unknown())))
+        if t.kind == 'search':
+            if not self.scan(t.point, force=True):
+                raise RuntimeError('Search action made no progress')
+        elif t.kind == 'probe':
+            cs = self.channels[t.channel]
+            cs.probe_count += 1
+            self.stats['probes'] += 1
+            self.sense(t.channel, t.point, 'LOCALIZE')
+        elif t.kind == 'clear':
+            if not self._clear_channel(self.channels[t.channel]):
+                raise RuntimeError('Clear failed')
+        else:
+            # 网格计划只生成一次：父类的“用尽后自动重生成”会让失败变成死循环，
+            # 这里让失败显式抛错。
+            if not self._grid_clear(self.channels[t.channel]):
+                raise RuntimeError('Finite grid exhausted')
+        if self.mc.mode not in ('nn_separate',):
+            self.scan(np.array(self.robot.current_position), force=False)
+        if 'joint' in self.mc.mode:
+            self.shared_localize(np.array(self.robot.current_position))
+        self.certify()
+
+    def shared_localize(self, p):
+        """一个停靠点顺带为其他已发现频道补测，避免反复回到各自首个（过时的）测点区域。"""
+        for ch, cs in self.channels.items():
+            if cs.status != STATUS_DETECTED or cs.radius is None \
+                    or cs.radius <= self.cfg.safe_region_radius:
+                continue
+            if any(np.linalg.norm(p - q) < 60 for q in self.used[ch]):
+                continue
+            if np.linalg.norm(p - cs.center) > 1200:
+                continue
+            if self._estimated_intersection_angle_deg(p, cs) < 12:
+                continue
+            self.sense(ch, p, 'SHARED_LOCALIZE')
+            self.stats['shared_measures'] += 1
+
+    def run_hex(self):
+        """对照基线：原点全扫，然后每到一个巡检站之前先把已发现目标处理完。
+
+        这是用于消融对比的重建版本，不代表任何缺失的“边扫边清六边形”实现。
+        """
+        ring = build_survey_points()[1:]
+        self.scan(np.array([0., 0.]), True)
+        idx = 0
+        while True:
+            tasks = self.target_tasks()
+            if tasks:
+                p = np.array(self.robot.current_position)
+                t = min(tasks, key=lambda task: np.linalg.norm(task.point - p))
+                self.execute(t)
+            elif idx < len(ring) and self.unknown():
+                p = np.array(self.robot.current_position)
+                j = min(range(idx, len(ring)), key=lambda k: np.linalg.norm(ring[k] - p))
+                ring[idx], ring[j] = ring[j], ring[idx]
+                self.scan(ring[idx], True)
+                idx += 1
+            else:
+                break
+
+    # -------------------------------------------------------------- 运行入口
+    def run(self):
+        self._enter()
+        try:
+            if self.mc.mode == 'hex_online':
+                self.run_hex()
+            else:
+                self.scan(np.array([0., 0.]), True)
+                for _ in range(self.mc.max_actions):
+                    if not self._time_left():
+                        raise RuntimeError('Time limit; no completion certificate')
+                    t = self.choose()
+                    if t is None:
+                        break
+                    self.execute(t)
+                else:
+                    raise RuntimeError('Action budget exhausted')
+            self.certify()
+            result = self._summary()
+            if not result['all_resolved'] or not SOURCE_COUNT_MIN <= result['cleared'] <= SOURCE_COUNT_MAX:
+                raise RuntimeError('Incomplete search or uncleared target')
+            result.update(search_stops=self.search_stops,
+                          piggyback_measures=self.piggyback_measures,
+                          piggyback_area_m2=self.piggyback_area,
+                          policy=self.mc.mode)
+            return result
+        finally:
+            self._exit()

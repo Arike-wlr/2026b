@@ -384,6 +384,8 @@ class TestRandomCases(unittest.TestCase):
                 self.assertEqual(result.source_count, RANDOM_CASE_SOURCE_COUNT)
                 self.assertEqual(result.cleared_count, RANDOM_CASE_SOURCE_COUNT)
                 self.assertTrue(result.success)
+                # 10 源不触发“已发现 16 个”提前结束，必须完整访问全部安全点。
+                self.assertEqual(result.survey_station_count, 25)
                 # 定向判定不允许出现假阳性
                 self.assertLessEqual(
                     result.confirmed_directional_count, result.directional_count
