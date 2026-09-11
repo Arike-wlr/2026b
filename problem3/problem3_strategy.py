@@ -69,8 +69,13 @@ SAFE_REGION_RADIUS = 58.0       # 两次清除法可行域半径上界 m
 
 # 策略内部可调参数
 GRID_SPACING = CLEAR_RADIUS * math.sqrt(2.0) * (1.0 - 1e-3)  # 保证网格覆盖 20 m 圆
-PROBE_FIRST_FORWARD = 600.0     # 第一组补测点：沿首测方向的偏移 m
-PROBE_FIRST_SIDE = 300.0        # 第一组补测点：垂直方向的偏移 m
+PROBE_R_EST_MIN = 100.0         # 动态拉偏：目标距离估计下限
+PROBE_R_EST_MAX = 800.0         # 动态拉偏：目标距离估计上限
+PROBE_SIDE_RATIO = 0.6          # 动态拉偏：侧向偏移比例，兼顾交会角与移动距离
+PROBE_SIDE_MAX = 350.0          # 动态拉偏：侧向偏移上限
+PROBE_FORWARD_RATIO = 0.5       # 动态拉偏：前向跟进比例
+PROBE_BACKUP_FORWARD = 600.0    # 远距离目标的接收保证备用补测点
+PROBE_BACKUP_SIDE = 300.0
 PROBE_STAGNATION_LIMIT = 3      # 连续多少次补测未缩小可行域就转网格兜底
 PROBE_MAX_PER_CHANNEL = 12      # 单频道补测次数上限
 REGION_CLUSTER_DISTANCE = 150.0  # 可行域中心小于该距离则归为同一空间批次
@@ -573,22 +578,47 @@ class Problem3Strategy:
         else:
             self._grid_clear_step(cs)
 
+    def _build_q2_probe_plan(self, cs: ChannelState,
+                             robot_pos: np.ndarray) -> List[np.ndarray]:
+        """按问题2思想生成动态拉偏补测点：侧向拉开，形成大交会角。"""
+        if cs.first_direction is None:
+            return []
+        S, u = cs.first_direction
+        v = perpendicular_left(u)
+        r_est = 600.0
+        if cs.center is not None:
+            r_est = float(np.linalg.norm(np.asarray(cs.center, dtype=float) - S))
+        r_est = float(np.clip(r_est, PROBE_R_EST_MIN, PROBE_R_EST_MAX))
+        side_offset = min(r_est * PROBE_SIDE_RATIO, PROBE_SIDE_MAX)
+        forward_offset = r_est * PROBE_FORWARD_RATIO
+        q2_points = [
+            S + forward_offset * u + side_offset * v,
+            S + forward_offset * u - side_offset * v,
+        ]
+        backup_points = [
+            S + PROBE_BACKUP_FORWARD * u + PROBE_BACKUP_SIDE * v,
+            S + PROBE_BACKUP_FORWARD * u - PROBE_BACKUP_SIDE * v,
+        ]
+        q2_points.sort(
+            key=lambda point: math.hypot(point[0] - robot_pos[0], point[1] - robot_pos[1])
+        )
+        backup_points.sort(
+            key=lambda point: math.hypot(point[0] - robot_pos[0], point[1] - robot_pos[1])
+        )
+        points = q2_points + backup_points
+        return [np.asarray(point, dtype=float) for point in points]
+
     def _peek_probe(self, cs: ChannelState,
                     robot_pos: np.ndarray) -> Optional[Tuple[np.ndarray, str]]:
         if cs.first_direction is None:
             return None
 
-        if not cs.probe_plan and cs.probe_count < 2:
-            S, u = cs.first_direction
-            v = perpendicular_left(u)
-            q1 = S + PROBE_FIRST_FORWARD * u + PROBE_FIRST_SIDE * v
-            q2 = S + PROBE_FIRST_FORWARD * u - PROBE_FIRST_SIDE * v
-            d1 = math.hypot(q1[0] - robot_pos[0], q1[1] - robot_pos[1])
-            d2 = math.hypot(q2[0] - robot_pos[0], q2[1] - robot_pos[1])
-            cs.probe_plan = [q1, q2] if d1 <= d2 else [q2, q1]
+        if not cs.probe_plan and cs.probe_count < 4:
+            cs.probe_plan = self._build_q2_probe_plan(cs, robot_pos)
 
         if cs.probe_plan:
-            return np.asarray(cs.probe_plan[0], dtype=float), "first_group"
+            kind = "q2_candidate" if cs.probe_count < 2 else "q2_backup"
+            return np.asarray(cs.probe_plan[0], dtype=float), kind
 
         if cs.enclosing is None or cs.radius is None or cs.feasible is None:
             return None
@@ -613,15 +643,9 @@ class Problem3Strategy:
         if cs.first_direction is None:
             return None
 
-        # 第一组：以首次测向位置 S 和方向 u 构造较近的 +forward*u±side*v 两点
-        if not cs.probe_plan and cs.probe_count < 2:
-            S, u = cs.first_direction
-            v = perpendicular_left(u)
-            q1 = S + PROBE_FIRST_FORWARD * u + PROBE_FIRST_SIDE * v
-            q2 = S + PROBE_FIRST_FORWARD * u - PROBE_FIRST_SIDE * v
-            d1 = math.hypot(q1[0] - robot_pos[0], q1[1] - robot_pos[1])
-            d2 = math.hypot(q2[0] - robot_pos[0], q2[1] - robot_pos[1])
-            cs.probe_plan = [q1, q2] if d1 <= d2 else [q2, q1]
+        # 第一组：问题2的 q2 候选瓣优先；远距离目标再使用接收保证备用点
+        if not cs.probe_plan and cs.probe_count < 4:
+            cs.probe_plan = self._build_q2_probe_plan(cs, robot_pos)
 
         if cs.probe_plan:
             point = cs.probe_plan.pop(0)
@@ -629,7 +653,8 @@ class Problem3Strategy:
                     math.hypot(point[0] - cs.last_probe[0],
                                point[1] - cs.last_probe[1]) < 1e-6:
                 return None
-            return point, "first_group"
+            kind = "q2_candidate" if cs.probe_count < 2 else "q2_backup"
+            return point, kind
 
         # 自适应横向补测：沿可行域最长轴的垂直方向、在最小包围圆圆心两侧交替
         if cs.enclosing is None or cs.radius is None or cs.feasible is None:

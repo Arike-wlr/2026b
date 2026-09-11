@@ -36,10 +36,17 @@ from problem3_strategy import (  # noqa: E402
     MAX_RECEIVE_RADIUS,
     MIN_RECEIVE_RADIUS,
     NEAR_RADIUS,
-    PROBE_FIRST_FORWARD,
-    PROBE_FIRST_SIDE,
+    PROBE_BACKUP_FORWARD,
+    PROBE_BACKUP_SIDE,
+    PROBE_FORWARD_RATIO,
+    PROBE_R_EST_MAX,
+    PROBE_R_EST_MIN,
+    PROBE_SIDE_MAX,
+    PROBE_SIDE_RATIO,
     SAFE_REGION_RADIUS,
     TARGET_RADIUS,
+    ChannelState,
+    Problem3Strategy,
     build_survey_points,
     GRID_SPACING,
 )
@@ -127,9 +134,31 @@ class TestBearing(unittest.TestCase):
         f2 = clip_wedge(f1, S, theta, math.radians(BEARING_ERROR_DEG))
         self.assertAlmostEqual(polygon_area(f1), polygon_area(f2), places=6)
 
-    def test_probe_points_always_receivable(self) -> None:
-        # 首次测向位置 S、真实距离 r∈(5,1500]、测向误差 e∈[-1°,1°]，
-        # Q_plus / Q_minus 到干扰源的最坏距离必须 < 1000 m
+    def test_q2_probe_points_use_dynamic_pull_aside(self) -> None:
+        # 问题2思想不是固定坐标，而是估计距离后侧向拉偏，形成接近 90° 的交会角。
+        sim = LocalSimulator(seed=1, num_sources=10)
+        strategy = Problem3Strategy(sim)
+        cs = ChannelState(channel=1)
+        S = np.array([0.0, 0.0])
+        u = np.array([1.0, 0.0])
+        cs.first_direction = (S, u)
+        cs.enclosing = (np.array([500.0, 0.0]), 120.0)
+
+        plan = strategy._build_q2_probe_plan(cs, np.array([0.0, 0.0]))  # noqa: SLF001
+        q2_candidates = plan[:2]
+        forward_values = sorted(round(float(point[0]), 6) for point in q2_candidates)
+        side_values = sorted(round(abs(float(point[1])), 6) for point in q2_candidates)
+
+        r_est = 500.0
+        self.assertEqual(forward_values, [r_est * PROBE_FORWARD_RATIO] * 2)
+        self.assertEqual(side_values, [r_est * PROBE_SIDE_RATIO] * 2)
+        self.assertLessEqual(side_values[0], PROBE_SIDE_MAX)
+        self.assertGreaterEqual(r_est, PROBE_R_EST_MIN)
+        self.assertLessEqual(r_est, PROBE_R_EST_MAX)
+
+    def test_backup_probe_points_always_receivable(self) -> None:
+        # 备用补测点承担全距离接收保证：首次测向位置 S、真实距离 r∈(5,1500]、
+        # 测向误差 e∈[-1°,1°] 时，Q_plus / Q_minus 到干扰源的最坏距离必须 < 1000 m。
         worst = 0.0
         for r in np.linspace(NEAR_RADIUS + 1e-6, MAX_RECEIVE_RADIUS, 400):
             for e_deg in np.linspace(-BEARING_ERROR_DEG, BEARING_ERROR_DEG, 21):
@@ -138,7 +167,7 @@ class TestBearing(unittest.TestCase):
                 v = np.array([-u[1], u[0]])
                 source = np.array([r, 0.0])          # 真实方向取 +x
                 for sign in (1.0, -1.0):
-                    Q = (PROBE_FIRST_FORWARD * u + sign * PROBE_FIRST_SIDE * v)
+                    Q = (PROBE_BACKUP_FORWARD * u + sign * PROBE_BACKUP_SIDE * v)
                     worst = max(worst, float(np.hypot(*(source - Q))))
         self.assertLess(worst, MIN_RECEIVE_RADIUS)
 
