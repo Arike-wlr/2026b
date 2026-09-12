@@ -28,13 +28,17 @@
 
 用法::
 
-    python problem4/problem4_main.py                                   # 本地 30 个案例，种子随机
-    python problem4/problem4_main.py --cases 200
-    python problem4/problem4_main.py --cases 10 --source-count 10
-    python problem4/problem4_main.py --random-state 42                 # 复现某次运行
+    python problem4/problem4_main.py                    # 接真实模拟器的唯一入口（演练/正式）
+    python problem4/problem4_strategy.py --cases 200    # 本模块的本地批量验证
+    python problem4/problem4_strategy.py --cases 10 --source-count 10
+    python problem4/problem4_strategy.py --random-state 42   # 复现某次运行
 
 不指定 ``--random-state`` 时每次运行都重新随机源的位置、接收半径、
 全向/定向搭配与发射方向；``--source-count 10`` 可把每个案例固定为 10 个源。
+
+自行记录：策略内部按动作落一份结构化日志（``ActionLogger``，表头与问题3 相同），
+``problem4_main.py`` 把它写到 ``actions.tsv``，通信层原始请求/响应另见
+``q4_logs/<时间戳>/http/robot_*.txt``；本地批量加 ``--log-dir`` 也会写首案例的动作日志。
 """
 from __future__ import annotations
 
@@ -70,6 +74,7 @@ from problem3_geometry import (
 )
 from problem3_local_sim import LocalSimulator, MeasureResult, Source
 from problem3_strategy import (
+    ActionLogger,
     BEARING_ERROR_DEG,
     CHANNEL_MAX,
     CHANNEL_MIN,
@@ -718,6 +723,8 @@ class Problem4Strategy:
         survey_detected_channels: bool = True,
         route_end_at_origin: bool | None = None,
         time_margin_s: float = 30.0,
+        log_path: str | None = None,
+        verbose: bool = False,
     ):
         self.robot = robot
         self.survey_detected_channels = survey_detected_channels
@@ -727,6 +734,14 @@ class Problem4Strategy:
             else bool(route_end_at_origin)
         )
         self.time_margin_s = time_margin_s
+
+        # ---- 自行记录：结构化动作日志（与问题3 同表头 / 同字段语义）----
+        # 不给 log_path、也不开 verbose 时 _logging 为假，_log() 直接返回，
+        # 不产生任何几何计算开销（本地批量验证仍按原速跑）。
+        self.logger = ActionLogger(log_path, verbose)
+        self._logging = bool(log_path) or bool(verbose)
+        self.seq = 0
+        self._phase = "INIT"
 
         self.channels = list(range(CHANNEL_MIN, CHANNEL_MAX + 1))
         self.observations: dict[int, list[DirectionObservation]] = {
@@ -775,11 +790,19 @@ class Problem4Strategy:
     def run(self) -> dict[str, object]:
         self._enter()
         try:
+            self._phase = "SURVEY"
             self.run_survey()
+            self._phase = "FINISH"
             self.finish()
         except TimeBudgetExceeded as error:
             self.incomplete_reason = str(error)
+            self._phase = "ABORT"
+            self._log(
+                "abort", *self._current_point(), CHANNEL_MIN,
+                result="time_budget_exceeded", note=str(error),
+            )
         finally:
+            self._phase = "EXIT"
             self._exit()
         return self.summary()
 
@@ -787,13 +810,33 @@ class Problem4Strategy:
         if not getattr(self.robot, "in_session", False):
             self.robot.enter()
             self._session_owned = True
+        self._phase = "INIT"
+        self._log(
+            "enter", *self._current_point(), CHANNEL_MIN,
+            result="entered",
+            note=(
+                "remaining_real_s="
+                f"{float(getattr(self.robot, 'remaining_real_s', float('nan'))):.1f}"
+            ),
+        )
 
     def _exit(self) -> None:
         try:
             if getattr(self.robot, "in_session", False):
                 self.robot.exit()
-        except Exception:
-            pass
+                self._log(
+                    "exit", *self._current_point(), CHANNEL_MIN,
+                    result="exit",
+                    note=(
+                        f"detected={len(self.detected)} cleared={len(self.cleared)} "
+                        f"virtual_time_s={float(self.robot.virtual_time_s):.1f}"
+                    ),
+                )
+        except Exception as error:  # noqa: BLE001 - 收尾失败不应掩盖主流程结果
+            self._log(
+                "exit_failed", *self._current_point(), CHANNEL_MIN,
+                result="error", note=repr(error),
+            )
 
     def summary(self) -> dict[str, object]:
         pending = sorted(self.detected - self.cleared)
@@ -835,24 +878,98 @@ class Problem4Strategy:
     # ------------------------------------------------------------ 底层动作封装
     def _measure(self, x: float, y: float, channel: int, is_probe: bool = False):
         before = self.robot.current_position
-        self.stats["move_distance"] += distance(before, (float(x), float(y)))
+        moved = distance(before, (float(x), float(y)))
+        self.stats["move_distance"] += moved
         current = self.robot.current_channel
-        if current is not None and current != channel:
+        switched = current is not None and current != channel
+        if switched:
             self.stats["switches"] += 1
         result = self.robot.measure(x, y, channel)
         self.stats["measures"] += 1
         if is_probe:
             self.stats["probes"] += 1
+        self._log(
+            "measure_probe" if is_probe else "measure", float(x), float(y), channel,
+            result=result.result, svd_deg=result.svd_deg,
+            note=self._action_note(moved, switched),
+        )
         return result
 
     def _clear(self, x: float, y: float, channel: int):
         before = self.robot.current_position
-        self.stats["move_distance"] += distance(before, (float(x), float(y)))
+        moved = distance(before, (float(x), float(y)))
+        self.stats["move_distance"] += moved
         result = self.robot.clear(x, y, channel)
         self.stats["clears"] += 1
         if result.cleared:
             self.stats["clear_success"] += 1
+        self._log(
+            "clear", float(x), float(y), channel,
+            result="success" if result.cleared else "no_target_in_range",
+            note=self._action_note(moved, False),
+        )
         return result
+
+    # ---------------------------------------------------------------- 日志
+    def _current_point(self) -> Point:
+        try:
+            x, y = self.robot.current_position
+            return (float(x), float(y))
+        except Exception:  # noqa: BLE001 - 记录失败不应影响主流程
+            return (0.0, 0.0)
+
+    @staticmethod
+    def _action_note(moved_m: float, switched: bool = False) -> str:
+        """把一次动作的移动距离 / 是否切频写进日志备注，便于赛后核对耗时。"""
+        return f"move={moved_m:.1f}m" + (" switch=1" if switched else "")
+
+    def _channel_status(self, channel: int) -> str:
+        if channel in self.cleared:
+            return "CLEARED"
+        if channel in self.certified_directional:
+            return "DIRECTIONAL"
+        if channel in self.detected:
+            return "DETECTED"
+        return "UNKNOWN"
+
+    def _feasible_radius(self, channel: int) -> float | None:
+        """当前可行域（测向楔形交集）的最小包围圆半径；无观测时为 None。"""
+        observations = self.observations.get(channel)
+        if not observations:
+            return None
+        polygon = feasible_polygon(observations)
+        if len(polygon) == 0:
+            return None
+        return float(minimum_enclosing_circle(polygon).radius)
+
+    def _log(
+        self,
+        action: str,
+        x: float,
+        y: float,
+        channel: int,
+        result: str = "-",
+        svd_deg: float | None = None,
+        note: str = "",
+    ) -> None:
+        """写一行动作日志；未开启日志时零开销直接返回。"""
+        if not self._logging:
+            return
+        self.seq += 1
+        self.logger.log(
+            seq=self.seq,
+            virtual_time=float(self.robot.virtual_time_s),
+            phase=self._phase,
+            action=action,
+            x=float(x),
+            y=float(y),
+            channel=int(channel),
+            result=result,
+            svd_deg=svd_deg,
+            channel_status=self._channel_status(channel),
+            feasible_radius=self._feasible_radius(channel),
+            note=note,
+        )
 
     # ------------------------------------------------------------ 可行域维护
     def _polygon(self, channel: int) -> np.ndarray:
@@ -932,6 +1049,14 @@ class Problem4Strategy:
             if all(distance(candidate, old) > 1e-6 for old in blocked_points):
                 blocked_points.append(candidate)
                 self.stats["directional_constraints"] += 1
+                self._log(
+                    "certify_directional", point[0], point[1], channel,
+                    result="directional",
+                    note=(
+                        f"polygon_farthest={farthest:.1f}m "
+                        f"blocked_points={len(blocked_points)}"
+                    ),
+                )
 
     def _unresolved(self) -> set[int]:
         return {
@@ -1030,6 +1155,15 @@ class Problem4Strategy:
 
     def _end_survey(self) -> float:
         self.survey_end_time_s = float(self.robot.virtual_time_s)
+        self._log(
+            "survey_end", *self._current_point(), CHANNEL_MIN,
+            result="survey_finished",
+            note=(
+                f"visited={self.survey_visited_station_count}/"
+                f"{len(concentric_dodecagon_stations())} "
+                f"detected={len(self.detected)} cleared={len(self.cleared)}"
+            ),
+        )
         return self.survey_end_time_s
 
     def _needs_free_survey_measurement(self, channel: int, station: Point) -> bool:
@@ -1333,6 +1467,11 @@ class Problem4Strategy:
     def _grid_clear(self, channel: int) -> None:
         """网格兜底清除：可行域三角格点遍历，最后的安全网。"""
         self.grid_fallback_count += 1
+        self._log(
+            "grid_clear_begin", *self._current_point(), channel,
+            result="start",
+            note=f"fallback_no={self.grid_fallback_count}",
+        )
         clear_by_oriented_triangular_cover(
             self.robot,
             channel,
@@ -1340,6 +1479,11 @@ class Problem4Strategy:
             time_margin_s=self.time_margin_s,
         )
         self.cleared.add(channel)
+        self._log(
+            "grid_clear_done", *self._current_point(), channel,
+            result="cleared",
+            note="格点内部逐点 clear 见通信日志",
+        )
 
     def _clear_circle(self, channel: int, circle: Circle) -> None:
         """可行域半径 ≤ 58 m 时的两次清除法，失败则转网格兜底。"""
@@ -1421,11 +1565,14 @@ def run_problem4_case(
     survey_detected_channels: bool = True,
     route_end_at_origin: bool | None = None,
     source_count: int | None = None,
+    log_path: str | None = None,
+    verbose: bool = False,
 ) -> Problem4CaseResult:
     """随机场景：源数默认在 10~16 随机，位置/接收半径/定向标志全部随机生成。
 
     ``source_count=10`` 可固定为"恰好 10 个源"的随机场景（源数固定，
     但全向/定向搭配、位置、接收半径、发射方向每次运行都重新随机）。
+    ``log_path`` 给定时同时写一份结构化动作日志（自行记录）。
     """
     sources = generate_mixed_sources(
         seed,
@@ -1445,6 +1592,8 @@ def run_problem4_case(
         directional_probability=directional_probability,
         survey_detected_channels=survey_detected_channels,
         route_end_at_origin=route_end_at_origin,
+        log_path=log_path,
+        verbose=verbose,
     )
 
 
@@ -1456,6 +1605,8 @@ def _evaluate_case(
     directional_probability: float,
     survey_detected_channels: bool = True,
     route_end_at_origin: bool | None = None,
+    log_path: str | None = None,
+    verbose: bool = False,
 ) -> Problem4CaseResult:
     """在本地仿真器上跑一个给定场景，并做真值校验（漏检、定向判定假阳性）。"""
     simulator = DirectionalLocalSimulator(sources, error_seed=seed + 10_000)
@@ -1463,6 +1614,8 @@ def _evaluate_case(
         simulator,
         survey_detected_channels=survey_detected_channels,
         route_end_at_origin=route_end_at_origin,
+        log_path=log_path,
+        verbose=verbose,
     )
     summary = strategy.run()
 
@@ -1700,6 +1853,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="收尾 TSP 不把最后节点到原点的距离计入代价",
     )
+    parser.add_argument(
+        "--log-dir",
+        default=None,
+        help="给定时把首个案例的结构化动作日志写到该目录（自行记录用）",
+    )
     return parser.parse_args()
 
 
@@ -1728,6 +1886,13 @@ def main() -> int:
             survey_detected_channels=survey_detected_channels,
             route_end_at_origin=not args.no_route_end_at_origin,
             source_count=args.source_count,
+            log_path=(
+                os.path.join(
+                    args.log_dir, f"problem4_local_seed{random_state + index}.tsv"
+                )
+                if args.log_dir and index == 0
+                else None
+            ),
         )
         for index in range(args.cases)
     ]
