@@ -88,7 +88,7 @@ def print_summary(summary: dict, robot, action_log: str | None, out: Path) -> No
     print(
         f"巡检点：实际访问 {summary['survey_station_count']}/"
         f"{summary['survey_planned_station_count']} 个"
-        "（圆心 + 内外两圈各 12 点）"
+        "（圆心 1 点 + 半径 996 m 内正八边形 8 点 + 外正十二边形 12 点）"
     )
     print(f"干扰源：检测到 {measured} 个，已清除 {cleared} 个")
     directional = list(summary["confirmed_directional_channels"])

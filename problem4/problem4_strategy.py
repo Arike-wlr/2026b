@@ -16,10 +16,11 @@
 不能再当作几何距离约束使用。策略据此做三点改动：
 
 1. 可行域只由 ``direction`` 观测裁剪（楔形 ∩ 接收盘），``no_signal`` 一律忽略；
-2. 巡检点使用 **25 个确定性检测点**：圆心 1 个 + 内正十二边形 12 个（半径 930 m）
-   + 外正十二边形 12 个（半径 ``R_o = 1800 / cos15° = 1863.497 m``），两圈错开 15°。
-   外圈半径使半径 1800 m 的目标圆恰好内切于外圈，内圈再铺满中心区域，
-   因此任意位置、任意发射方向的源都必有一点同时落在其 1000 m 接收圆与 90° 定向半圆内。
+2. 巡检点使用严格证明过的 **21 个确定性检测点**：圆心 1 个 + 半径 996 m 的
+   内正八边形 8 个点 + 外接目标圆的正十二边形 12 个点（外接圆半径
+   ``R_o = 1800 / cos15° = 1863.497 m``）。证明以 998 m 为认证半径，把区域分解为
+   40 个三点安全单元，因此任意位置、任意发射方向的源都必有一点同时落在其
+   1000 m 接收圆与 90° 定向半圆内。
 3. 巡检途中把已经可靠定位的清除中心与尚未访问的安全检测点放入同一条
    滚动开放路径，避免走完整条巡检骨架后再折返清除。
 
@@ -43,12 +44,14 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import itertools
 import json
 import math
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -97,11 +100,12 @@ from simulator import (
 Point = tuple[float, float]
 
 # --------------------------------------------------------------------------- #
-# 25 点巡检方案与策略参数
+# 21 点严格覆盖巡检方案与策略参数
 # --------------------------------------------------------------------------- #
-INNER_DODECAGON_RADIUS_M = 930.0
+INNER_OCTAGON_RADIUS_M = 996.0
 OUTER_DODECAGON_RADIUS_M = TARGET_RADIUS / math.cos(math.pi / 12.0)
-DODECAGON_INTERLEAVE_ANGLE_DEG = 15.0
+COVERAGE_CERTIFICATION_RADIUS_M = 998.0
+COVERAGE_SAFE_CELL_COUNT = 40
 
 # 可行域半径不超过该值时，两次清除法（先圆心、再按测向偏移）保证 20 m 内命中
 SAFE_LOCALIZATION_RADIUS_M = 58.0
@@ -349,50 +353,110 @@ def exact_open_route(
     return route
 
 
-def concentric_dodecagon_stations(
+def twenty_one_point_stations(
     inner_radius_m: float | None = None,
     outer_radius_m: float | None = None,
 ) -> list[Point]:
-    """圆心 1 个 + 内外两圈各 12 点的正十二边形，共 25 个检测点。
+    """返回证明中的 21 点：圆心 + 内正八边形 + 外正十二边形。
 
-    内圈顶点取 ``15° + k·30°``，外圈取 ``k·30°``，两圈错开 15°；
-    外圈半径取 ``1800 / cos15°``，使半径 1800 m 的目标圆恰好内切于外圈，
-    从而外圈顶点对目标圆外的环带也保证 1000 m 覆盖。
+    内圈为 ``I_k = 996(cos(k*pi/4), sin(k*pi/4))``；外圈为
+    ``E_j = R(cos(j*pi/6), sin(j*pi/6))``，其中
+    ``R = 1800/cos(15°)``。正式参数下，证明用半径 998 m 的 40 个三点
+    安全单元覆盖外十二边形，从而严格覆盖整个半径 1800 m 的目标圆。
+
+    两个可选半径参数只为几何回归实验保留；正式策略始终使用上述默认值。
     """
     inner_radius = (
-        INNER_DODECAGON_RADIUS_M if inner_radius_m is None else inner_radius_m
+        INNER_OCTAGON_RADIUS_M if inner_radius_m is None else inner_radius_m
     )
     outer_radius = (
         OUTER_DODECAGON_RADIUS_M if outer_radius_m is None else outer_radius_m
     )
-    angle_step = 2.0 * math.pi / 12.0
-    half_step = angle_step / 2.0
     inner = [
         (
-            inner_radius * math.cos(half_step + index * angle_step),
-            inner_radius * math.sin(half_step + index * angle_step),
+            inner_radius * math.cos(index * math.pi / 4.0),
+            inner_radius * math.sin(index * math.pi / 4.0),
         )
-        for index in range(12)
+        for index in range(8)
     ]
     outer = [
         (
-            outer_radius * math.cos(index * angle_step),
-            outer_radius * math.sin(index * angle_step),
+            outer_radius * math.cos(index * math.pi / 6.0),
+            outer_radius * math.sin(index * math.pi / 6.0),
         )
         for index in range(12)
     ]
 
-    required_lengths = (
+    # 证明中可直接应用“短边三角形整体安全”的两类代表边。
+    directly_safe_lengths = (
         inner_radius,
         distance(inner[0], inner[1]),
         distance(outer[0], outer[1]),
-        distance(inner[0], outer[0]),
+        distance(inner[1], outer[1]),
+        distance(inner[1], outer[2]),
     )
-    if max(required_lengths) > MIN_RECEIVE_RADIUS + 1e-8:
-        raise ValueError("十二边形三角剖分存在超过 1000 m 的边")
-    if outer_radius * math.cos(half_step) < TARGET_RADIUS - 1e-8:
+    if max(directly_safe_lengths) > COVERAGE_CERTIFICATION_RADIUS_M + 1e-8:
+        raise ValueError("21 点结构的短边安全单元超过 998 m 认证半径")
+    if not (
+        inner_radius < COVERAGE_CERTIFICATION_RADIUS_M < MIN_RECEIVE_RADIUS
+    ):
+        raise ValueError("必须满足内八边形半径 < 998 m < 最小接收半径")
+    if outer_radius * math.cos(math.pi / 12.0) < TARGET_RADIUS - 1e-8:
         raise ValueError("外圈十二边形未覆盖目标圆")
-    return [(0.0, 0.0)] + inner + outer
+    stations = [(0.0, 0.0)] + inner + outer
+    if len(stations) != 21:
+        raise AssertionError("21 点巡检结构生成失败")
+    return stations
+
+
+# 保留旧函数名，避免已有评测/复现实验脚本的导入接口失效。
+concentric_dodecagon_stations = twenty_one_point_stations
+
+
+def coverage_certificate_triplets() -> list[tuple[int, int, int]]:
+    """返回证明附录中的 40 个三点安全单元（按 21 点列表下标编号）。
+
+    下标 ``0`` 是圆心，``1..8`` 是 ``I_0..I_7``，``9..20`` 是
+    ``E_0..E_11``。十个基本三元组分别旋转 0°、90°、180°、270°。
+    这些三元组是离线核验证书；在线巡检只需要访问 21 个检测点。
+    """
+
+    def inner(index: int) -> int:
+        return 1 + index % 8
+
+    def outer(index: int) -> int:
+        return 9 + index % 12
+
+    base = (
+        (("I", 1), ("E", 1), ("E", 2)),
+        (("I", 0), ("E", 0), ("E", 11)),
+        (("I", 0), ("E", 0), ("E", 1)),
+        (("O", 0), ("I", 0), ("I", 1)),
+        (("O", 0), ("I", 0), ("I", 7)),
+        (("I", 0), ("I", 1), ("E", 1)),
+        (("I", 0), ("I", 7), ("E", 11)),
+        (("I", 1), ("I", 3), ("E", 3)),
+        (("I", 1), ("E", 2), ("E", 3)),
+        (("I", 1), ("E", 0), ("E", 1)),
+    )
+
+    result: list[tuple[int, int, int]] = []
+    for quarter_turn in range(4):
+        inner_shift = 2 * quarter_turn
+        outer_shift = 3 * quarter_turn
+        for triple in base:
+            indices = []
+            for ring, index in triple:
+                if ring == "O":
+                    indices.append(0)
+                elif ring == "I":
+                    indices.append(inner(index + inner_shift))
+                else:
+                    indices.append(outer(index + outer_shift))
+            result.append(tuple(indices))
+    if len(result) != COVERAGE_SAFE_CELL_COUNT or len(set(result)) != len(result):
+        raise AssertionError("40 个安全单元生成失败")
+    return result
 
 
 def source_orientation_coverage_gap(
@@ -439,7 +503,7 @@ def concentric_dodecagon_route(
     inner_radius_m: float | None = None,
     outer_radius_m: float | None = None,
 ) -> list[Point]:
-    """25 点巡检路线的固定顺序版本（路线长度对照/回归验证用，生产路径走动态重排）。
+    """21 点巡检路线的固定顺序版本（路线长度对照/回归验证用，生产路径走动态重排）。
     """
     stations = concentric_dodecagon_stations(inner_radius_m, outer_radius_m)
     origin = stations[0]
@@ -846,6 +910,8 @@ class Problem4Strategy:
         return {
             "survey_station_count": self.survey_visited_station_count,
             "survey_planned_station_count": len(concentric_dodecagon_stations()),
+            "coverage_certificate_radius_m": COVERAGE_CERTIFICATION_RADIUS_M,
+            "coverage_safe_cell_count": len(coverage_certificate_triplets()),
             "survey_measurement_count": self.survey_measurement_count,
             "detected": len(self.detected),
             "cleared": len(self.cleared),
@@ -984,11 +1050,11 @@ class Problem4Strategy:
         都在前方，二者要能用一条过 G 的直线分开；无解则 G 不可能（等价于「全部测向
         点落在某个 180° 弧内、量程内 no_signal 点全在弧外」）。
 
+        对未检出频道，它退化为「量程内测点必须塞进一个开半平面」，即判空证书。
+        21 点方案的严格完备性来自 998 m 认证半径下的 40 个三点安全单元覆盖；因此某频道
+        只有在 21 个证明测点全部无信号后才能安全判空，不能提前按无信号次数停止。
+
         实测（种子 3000-3011）：
-        * 对未检出频道它退化为「量程内测点必须塞进一个开半平面」，即判空证书——
-          25 点方案的完备性正是建立在这条约束上：可排除区域随测点数为
-          6%(5 点) → 36%(15 点) → 92%(24 点) → **100%(25 点)**，所以判空必须等到
-          第 25 个测点，省不了任何测量。
         * 对已定位频道几乎没有压缩力：80 次清除/补测决策里只有 3 次能缩小可行域
           （中位包围半径 24 → 24 m），因为那时可行域只剩 ~29 m 半径，域内各候选点
           的观测几何已经一致，要么全可行要么全不可行。
@@ -1069,18 +1135,12 @@ class Problem4Strategy:
 
     # ---------------------------------------------------------------- 阶段A
     def run_survey(self) -> float:
-        """访问全部 25 个安全点；清除插入后动态重排剩余路线。
+        """访问全部 21 个证明测点；清除插入后动态重排剩余路线。
 
         尚未检出的频道必须在**每个**测点都测一次，不能按"空检测计数"降频抽查。
-        曾评估"频率计分板"（首点全扫；未检出频道前 3 点跟着测、其后每 5 点抽查一次，
-        即每频道只落在 25 点里的 ~7 点）：16 例 × 10 源实测 **0/16 成功、平均漏
-        4.3/10 个源**，且 ``summary()["complete"]`` 仍报 True——漏检的源从未被检出，
-        不进 ``pending``，属于静默失败。
-
-        原因：判空与必检出是同一个 (G,e) 覆盖条件，25 点在该条件下是局部最小集
-        （见 ``test_every_station_is_necessary``），少测一个点就有区域无法排除；
-        每频道只测 ~7 点时，盘内约 90% 的区域成为盲区。唯一的合法"降频"是题面
-        给出的源数上界：已检出 ``SOURCE_COUNT_MAX`` 个即结束巡检。
+        原因是判空与必检出使用同一个 ``(位置, 发射朝向)`` 覆盖条件；模型只证明完整
+        21 点集合充分覆盖，并未证明任意前缀或任意删点后的集合仍然覆盖。唯一可安全提前
+        结束的情形是已检出题面给出的源数上界 ``SOURCE_COUNT_MAX`` 个。
         """
         stations = concentric_dodecagon_stations()
         remaining = {
@@ -1585,9 +1645,9 @@ def run_problem4_case(
     return _evaluate_case(
         case_id=case_id,
         case_name=(
-            f"随机 {len(sources)} 源 seed={seed}"
+            f"random {len(sources)} sources seed={seed}"
             if source_count is not None
-            else f"随机 seed={seed}"
+            else f"random seed={seed}"
         ),
         seed=seed,
         sources=sources,
@@ -1705,7 +1765,7 @@ def summarize_problem4(
     # 单源定位清除时间 = 该案例总虚拟时间 / 该案例干扰源数
     per_source = totals / source_counts
     return {
-        "strategy": "problem4_concentric_dodecagons",
+        "strategy": "problem4_21_point_octagon_dodecagon",
         "random_state": random_state,
         "case_count": len(results),
         "case_names": [result.case_name for result in results],
@@ -1713,9 +1773,10 @@ def summarize_problem4(
         "survey_detected_channels": survey_detected_channels,
         "route_end_at_origin": route_end_at_origin,
         "survey_station_count": results[0].survey_station_count,
-        "inner_dodecagon_radius_m": INNER_DODECAGON_RADIUS_M,
+        "inner_octagon_radius_m": INNER_OCTAGON_RADIUS_M,
         "outer_dodecagon_radius_m": OUTER_DODECAGON_RADIUS_M,
-        "dodecagon_interleave_angle_deg": DODECAGON_INTERLEAVE_ANGLE_DEG,
+        "coverage_certificate_radius_m": COVERAGE_CERTIFICATION_RADIUS_M,
+        "coverage_safe_cell_count": COVERAGE_SAFE_CELL_COUNT,
         "success_count": sum(result.success for result in results),
         "success_rate": float(
             np.mean([result.success for result in results])
@@ -1821,6 +1882,26 @@ def summarize_problem4(
     }
 
 
+def write_results(
+    results: list[Problem4CaseResult],
+    summary: dict[str, object],
+    output_prefix: Path | str,
+) -> None:
+    """写 ``<prefix>.csv``（逐案，表头/取值均为英文）与 ``<prefix>.json``（汇总）。"""
+    output_prefix = Path(output_prefix)
+    output_prefix.parent.mkdir(parents=True, exist_ok=True)
+    rows = [asdict(result) for result in results]
+    with output_prefix.with_suffix(".csv").open(
+        "w", newline="", encoding="utf-8-sig"
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]) if rows else [])
+        writer.writeheader()
+        writer.writerows(rows)
+    output_prefix.with_suffix(".json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
 def resolve_random_state(random_state: int | None) -> int:
     """未显式指定种子时，每次运行重新取一个随机种子（并写进结果便于复现）。"""
     if random_state is not None:
@@ -1859,6 +1940,12 @@ def parse_args() -> argparse.Namespace:
         "--log-dir",
         default=None,
         help="给定时把首个案例的结构化动作日志写到该目录（自行记录用）",
+    )
+    parser.add_argument(
+        "--output-prefix",
+        type=Path,
+        default=Path(_HERE) / "outputs/tables/problem4_strategy_local",
+        help="本地评测逐案结果落盘前缀（写 <prefix>.csv 与 <prefix>.json）",
     )
     return parser.parse_args()
 
@@ -1927,6 +2014,9 @@ def main() -> int:
         f"（中位 {float(summary['median_clear_time_s']):.2f} s，"
         f"最差 {float(summary['max_clear_time_s']):.2f} s）"
     )
+    write_results(results, summary, args.output_prefix)
+    print(f"逐案结果(CSV)：{args.output_prefix.with_suffix('.csv')}")
+    print(f"汇总(JSON)：{args.output_prefix.with_suffix('.json')}")
     # 如确需完整汇总，可取消下一行注释（会输出大段 JSON）：
     # print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
