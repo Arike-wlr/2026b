@@ -179,6 +179,12 @@ class RobotClient:
         self._max_virtual_duration_s: Optional[float] = None
         self._max_real_duration_s: Optional[float] = None
         self._real_deadline: Optional[float] = None
+        self._enter_monotonic_s: Optional[float] = None
+        self._program_runtime_s: Optional[float] = None
+        self._program_runtime_source: Optional[str] = None
+        self._enter_response: Dict = {}
+        self._exit_response: Dict = {}
+        self._exit_reason: Optional[str] = None
 
         # ---- 日志 ----
         self.log_dir = log_dir
@@ -230,6 +236,86 @@ class RobotClient:
         if self._real_deadline is None:
             return 0.0
         return max(0.0, self._real_deadline - time.monotonic())
+
+    @property
+    def enter_response(self) -> Dict:
+        """最近一次成功 ``/enter`` 的完整响应副本。"""
+        return dict(self._enter_response)
+
+    @property
+    def exit_response(self) -> Dict:
+        """最近一次成功 ``/exit`` 的完整响应副本。"""
+        return dict(self._exit_response)
+
+    @property
+    def exit_reason(self) -> Optional[str]:
+        return self._exit_reason
+
+    @property
+    def program_runtime_s(self) -> Optional[float]:
+        """题面口径的程序运行时间：成功 ``/enter`` 到测试结束的现实秒数。"""
+        if self._program_runtime_s is not None:
+            return self._program_runtime_s
+        if self._enter_monotonic_s is not None:
+            return max(0.0, time.monotonic() - self._enter_monotonic_s)
+        return None
+
+    @property
+    def program_runtime_source(self) -> Optional[str]:
+        """运行时间来源：服务器时间戳或本机单调时钟。"""
+        if self._program_runtime_source is not None:
+            return self._program_runtime_source
+        if self._enter_monotonic_s is not None:
+            return "local_monotonic_clock"
+        return None
+
+    @staticmethod
+    def _find_response_value(responses: tuple[Dict, ...], keys: tuple[str, ...]):
+        """兼容正式模拟器可能使用的顶层或嵌套元数据字段。"""
+        wanted = {key.lower() for key in keys}
+
+        def visit(value):
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if str(key).lower() in wanted and item not in (None, ""):
+                        return item
+                for item in value.values():
+                    found = visit(item)
+                    if found not in (None, ""):
+                        return found
+            elif isinstance(value, list):
+                for item in value:
+                    found = visit(item)
+                    if found not in (None, ""):
+                        return found
+            return None
+
+        for response in responses:
+            found = visit(response)
+            if found not in (None, ""):
+                return found
+        return None
+
+    @property
+    def test_case_code(self) -> Optional[str]:
+        """若接口响应携带案例编码则返回；当前演练接口通常不提供。"""
+        value = self._find_response_value(
+            (self._exit_response, self._enter_response),
+            ("test_case_code", "case_code", "test_case_id", "case_id"),
+        )
+        return None if value in (None, "") else str(value)
+
+    @property
+    def reported_source_count(self) -> Optional[int]:
+        """若结束响应携带干扰源总数则返回。"""
+        value = self._find_response_value(
+            (self._exit_response, self._enter_response),
+            ("source_count", "total_source_count", "interference_source_count"),
+        )
+        try:
+            return None if value is None else int(value)
+        except (TypeError, ValueError):
+            return None
 
     def is_time_up(self, margin_s: float = 0.0) -> bool:
         """现实时间或虚拟时间是否即将/已经耗尽。
@@ -371,6 +457,12 @@ class RobotClient:
         """
         data = self._post("/enter", self._base_payload("enter"))
 
+        self._enter_response = dict(data)
+        self._exit_response = {}
+        self._exit_reason = None
+        self._program_runtime_s = None
+        self._program_runtime_source = None
+        self._enter_monotonic_s = time.monotonic()
         self._in_session = True
         self._current_position = (0.0, 0.0)
         self._current_channel = 1
@@ -453,5 +545,21 @@ class RobotClient:
         if not self._in_session:
             raise NotInSessionError("尚未 enter()，无需 exit()")
         data = self._post("/exit", self._base_payload("exit"))
+        self._exit_response = dict(data)
+        self._exit_reason = data.get("exit_reason")
+        enter_timestamp = self._enter_response.get("real_timestamp_ms")
+        exit_timestamp = data.get("real_timestamp_ms")
+        try:
+            elapsed = (float(exit_timestamp) - float(enter_timestamp)) / 1000.0
+        except (TypeError, ValueError):
+            elapsed = -1.0
+        if elapsed >= 0.0:
+            self._program_runtime_s = elapsed
+            self._program_runtime_source = "server_real_timestamp_ms"
+        elif self._enter_monotonic_s is not None:
+            self._program_runtime_s = max(
+                0.0, time.monotonic() - self._enter_monotonic_s
+            )
+            self._program_runtime_source = "local_monotonic_clock"
         self._in_session = False
-        return data.get("exit_reason")
+        return str(self._exit_reason or "")

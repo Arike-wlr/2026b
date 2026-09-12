@@ -23,8 +23,8 @@
 
     python problem3/problem3_strategy.py --cases 20     # 问题 3 离线批量验证
     python problem4/problem4_strategy.py --cases 200    # 问题 4 离线批量验证
-    python problem3/problem3_main.py                    # 问题 3 真实演练
-    python problem4/problem4_main.py                    # 问题 4 真实演练
+    python problem3/problem3_main.py                    # 问题 3 联网（演练/正式由界面决定）
+    python problem4/problem4_main.py                    # 问题 4 联网（演练/正式由界面决定）
 """
 
 from __future__ import annotations

@@ -24,8 +24,8 @@ d:/CUMCMB/
 │   ├── enter_exit.py           早期脚本：只测 /enter + /exit（已被 smoke_test.py 取代）
 │   └── test_all_interfaces.py  早期脚本：一次性跑完 4 条指令（已被 smoke_test.py 取代）
 ├── logs/                       client.py 直接运行时的日志目录（robot_年月日_时分秒.txt）
-├── problem3/q3_logs/           问题3 每次运行的归档：http/robot_*.txt + actions.tsv + result.json
-└── problem4/q4_logs/           问题4 每次运行的归档：http/robot_*.txt + actions.tsv + result.json
+├── problem3/q3_logs/           问题3 每次联网运行的完整归档（含表1结果）
+└── problem4/q4_logs/           问题4 每次联网运行的完整归档（含表1结果）
 ```
 
 约定：**主要代码一律放在项目根目录**，`test/` 只放放行前的测试脚本，正式测试运行时不依赖它。
@@ -199,9 +199,11 @@ with RobotClient("202610038037") as robot:
 5. **`accepted=false` 不污染时钟**：此时不更新 `virtual_time_s`、位置和频道。
 6. **日志落盘**：`client.py` 每次运行在项目根 `logs/` 下生成独立日志文件，记录全部请求与响应
    （规范要求机器狗自行记录，模拟器界面只显示最新 1000 条）；问题3/问题4 的入口再各自建一份
-   "一次测试一份归档"的目录 `q3_logs/practice_<时间戳>/`、`q4_logs/practice_<时间戳>/`，内含
+   “一次测试一份归档”的目录 `problem3/q3_logs/run_<时间戳>/`、
+   `problem4/q4_logs/run_<时间戳>/`，内含
    `http/robot_*.txt`（通信层原始记录）、`actions.tsv`（结构化动作日志：序号/虚拟时刻/阶段/动作/
-   坐标/频道/结果/可行域半径/备注）与 `result.json`（汇总指标 + 异常），失败也会落盘。
+   坐标/频道/结果/可行域半径/备注）、`result.json`（汇总指标 + 异常），以及可直接汇入论文表 1
+   的 `table1_row.csv` / `table1_row.json`；演练与正式采用同一保存逻辑，失败也会落盘。
 
 ---
 

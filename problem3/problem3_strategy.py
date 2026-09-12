@@ -13,7 +13,7 @@
    ``build_strategy``；``build_strategy()`` 不带开关时即最终演练采用的组合；
 4. **本地随机测试** —— ``python problem3/problem3_strategy.py --cases 20``（离线，不联网）。
 
-真实演练：``python problem3/main.py --robot-id 你们的参赛队号 --confirm-problem3-practice``。
+联网运行：``python problem3/problem3_main.py``；演练或正式由模拟器界面当前选择决定。
 """
 
 
