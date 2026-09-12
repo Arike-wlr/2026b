@@ -3505,6 +3505,22 @@ class _CaseRow:
     success: bool
     seconds_per_source: float | None
     error: str | None
+    total_virtual_time_s: float | None = None
+    virtual_time_min: float | None = None
+    movement_time_s: float | None = None
+    measurement_time_s: float | None = None
+    switching_time_s: float | None = None
+    clearing_time_s: float | None = None
+    tail_after_last_clear_s: float | None = None
+    measure_count: float | None = None
+    clear_count: float | None = None
+    clear_success_count: float | None = None
+    detected: int | None = None
+    empty_certified: int | None = None
+    unknown: int | None = None
+    per_source_movement_s: float | None = None
+    per_source_action_s: float | None = None
+    per_source_tail_s: float | None = None
 
 
 def write_results(
@@ -3512,24 +3528,42 @@ def write_results(
     summary: dict[str, Any],
     output_prefix: Path | str,
 ) -> None:
-    """写 ``<prefix>.csv``（逐案）与 ``<prefix>.json``（汇总）。"""
+    """写 ``<prefix>.csv``（逐案，表头/取值均为英文）与 ``<prefix>.json``（汇总）。"""
     output_prefix = Path(output_prefix)
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
-    rows = [
-        asdict(
-            _CaseRow(
-                case_id=int(case["case_id"]),
-                seed=int(case["seed"]),
-                strategy=str(case["strategy"]),
-                source_total=int(case["source_total"]),
-                source_cleared=int(case["source_cleared"]),
-                success=bool(case["success"]),
-                seconds_per_source=case["seconds_per_source"],
-                error=case["error"],
+    rows = []
+    for case in results:
+        stats = case.get("strategy_summary") or {}
+        rows.append(
+            asdict(
+                _CaseRow(
+                    case_id=int(case["case_id"]),
+                    seed=int(case["seed"]),
+                    strategy=str(case["strategy"]),
+                    source_total=int(case["source_total"]),
+                    source_cleared=int(case["source_cleared"]),
+                    success=bool(case["success"]),
+                    seconds_per_source=case["seconds_per_source"],
+                    error=case["error"],
+                    total_virtual_time_s=case.get("total_virtual_time_s"),
+                    virtual_time_min=case.get("virtual_time_min"),
+                    movement_time_s=case.get("movement_time_s"),
+                    measurement_time_s=case.get("measurement_time_s"),
+                    switching_time_s=case.get("switching_time_s"),
+                    clearing_time_s=case.get("clearing_time_s"),
+                    tail_after_last_clear_s=case.get("tail_after_last_clear_s"),
+                    measure_count=case.get("measure_count"),
+                    clear_count=case.get("clear_count"),
+                    clear_success_count=case.get("clear_success_count"),
+                    detected=stats.get("detected"),
+                    empty_certified=stats.get("empty_certified"),
+                    unknown=stats.get("unknown"),
+                    per_source_movement_s=case.get("per_source_movement_s"),
+                    per_source_action_s=case.get("per_source_action_s"),
+                    per_source_tail_s=case.get("per_source_tail_s"),
+                )
             )
         )
-        for case in results
-    ]
     with output_prefix.with_suffix(".csv").open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]) if rows else [])
         writer.writeheader()
@@ -3748,6 +3782,8 @@ def main(argv: list[str] | None = None) -> int:
         f"（中位 {median_s:.2f} s，最差 {worst_s:.2f} s）"
     )
     write_results(results, summary, args.output_prefix)
+    print(f"逐案结果(CSV)：{args.output_prefix.with_suffix('.csv')}")
+    print(f"汇总(JSON)：{args.output_prefix.with_suffix('.json')}")
     # 完整汇总已写入 <output-prefix>.json；如仍需打印，可取消下一行注释：
     # print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0

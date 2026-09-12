@@ -8,7 +8,9 @@ q3_logs/
 q4_logs/
 research/
 *outputs/
+experimental*
 trial/
 调参/
 *.zip
 *.docx
+tmp/
