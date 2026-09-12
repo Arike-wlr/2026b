@@ -3546,6 +3546,39 @@ def resolve_random_state(random_state: int | None) -> int:
     return int(np.random.default_rng().integers(0, 2**31 - 1))
 
 
+def source_count_for_seed(seed: int) -> int:
+    """只探测某随机种子会生成多少个干扰源，不消耗真实仿真的随机流。
+
+    ``LocalSimulator(seed)`` 在 ``num_sources`` 未显式给出时，用同一颗种子抽一个
+    ``[SOURCE_COUNT_MIN, SOURCE_COUNT_MAX]`` 的整数；这里复刻该抽样，使种子筛选
+    与真实案例完全一致。
+    """
+    rng = np.random.default_rng(int(seed))
+    return int(rng.integers(SOURCE_COUNT_MIN, SOURCE_COUNT_MAX + 1))
+
+
+def selected_seeds(
+    start: int,
+    count: int,
+    minimum: int,
+    maximum: int,
+) -> list[int]:
+    """从 ``start`` 起递增取种子，只保留源数落在 ``[minimum, maximum]`` 内的种子。
+
+    与 ``--source-count`` 的区别：后者固定源数但会让源数分布偏离区间，前者保持
+    题目原有的随机源数，只把区间外的种子换成区间内的种子。
+    """
+    if minimum > maximum:
+        raise ValueError(f"种子筛选区间非法：{minimum} > {maximum}")
+    seeds: list[int] = []
+    seed = int(start)
+    while len(seeds) < count:
+        if minimum <= source_count_for_seed(seed) <= maximum:
+            seeds.append(seed)
+        seed += 1
+    return seeds
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="问题3 策略本地随机测试（离线，不联网）",
@@ -3562,6 +3595,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
         help="固定每个案例的干扰源数（例如 10）；默认在题面的 10~16 之间随机",
+    )
+    parser.add_argument(
+        "--min-source-count",
+        type=int,
+        default=SOURCE_COUNT_MIN,
+        help=f"筛掉源数低于此值的随机种子（默认 {SOURCE_COUNT_MIN}）",
+    )
+    parser.add_argument(
+        "--max-source-count",
+        type=int,
+        default=SOURCE_COUNT_MAX,
+        help=f"筛掉源数高于此值的随机种子（默认 {SOURCE_COUNT_MAX}；低源实验用 12）",
     )
     parser.add_argument("--gain-threshold", type=float, default=DEFAULT_PIGGYBACK_GAIN_M2)
     parser.add_argument(
