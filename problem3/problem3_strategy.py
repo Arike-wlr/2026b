@@ -1,4 +1,4 @@
-"""问题 3 的唯一策略文件（供 ``problem3/main.py`` 运行，也可直接本地随机测试）。
+"""问题 3 的唯一策略文件（供 ``problem3/problem3_main.py`` 运行，也可直接本地随机测试）。
 
 结构：
 
@@ -5060,6 +5060,11 @@ def main(argv: list[str] | None = None) -> int:
         enable_neighborhood_cover=args.neighborhood_cover,
         neighborhood_iterations=args.neighborhood_iterations,
     )
+    print(
+        f"随机状态 {args.random_state}（{args.cases} 个案例，"
+        f"源数在 {args.min_source_count}~{args.max_source_count} 随机；"
+        f"复现本次运行请加 --random-state {args.random_state}）"
+    )
     seeds = selected_seeds(
         args.random_state,
         args.cases,
@@ -5069,6 +5074,30 @@ def main(argv: list[str] | None = None) -> int:
     results = [
         run_case(index + 1, seed, strategy_class) for index, seed in enumerate(seeds)
     ]
+    # 逐案例明细（与 problem4 本地批量同版式）
+    for result in results:
+        stats = result.get("strategy_summary") or {}
+        per_source = result["seconds_per_source"]
+        per_source_text = (
+            f"{float(per_source):8.2f} s" if per_source is not None else "     n/a"
+        )
+        action_min = (
+            float(result["measurement_time_s"])
+            + float(result["switching_time_s"])
+            + float(result["clearing_time_s"])
+        ) / 60.0
+        print(
+            f"[{int(result['case_id']):>2}] seed {int(result['seed'])}"
+            f"｜源 {int(result['source_total'])}"
+            f"（检测 {stats.get('detected', '-')} / "
+            f"空证书 {stats.get('empty_certified', '-')} / "
+            f"未决 {stats.get('unknown', '-')}）"
+            f"｜清除 {int(result['source_cleared'])}/{int(result['source_total'])}"
+            f"｜单源平均 {per_source_text}"
+            f"｜总 {float(result['total_virtual_time_s']) / 60.0:7.2f} min"
+            f"｜移动 {float(result['movement_time_s']) / 60.0:7.2f} min"
+            f"｜动作 {action_min:7.2f} min"
+        )
     summary = summarize(results, args.random_state)
     summary["strategy"] = (
         "q3_empty_channel_hex_cover" if args.hex_cover
@@ -5078,6 +5107,19 @@ def main(argv: list[str] | None = None) -> int:
     summary["hex_cover"] = args.hex_cover
     summary["ring_radius_m"] = args.ring_radius
     summary["selected_seeds"] = seeds
+    per_source_values = [
+        float(result["seconds_per_source"])
+        for result in results
+        if result["seconds_per_source"] is not None
+    ]
+    mean_s = float(summary["mean_seconds_per_source"] or 0.0)
+    median_s = float(summary["median_seconds_per_source"] or 0.0)
+    worst_s = max(per_source_values) if per_source_values else 0.0
+    print(
+        f"合计：{len(results)} 例，成功 {summary['success_count']}/{len(results)}；"
+        f"单源平均 {mean_s:.2f} s"
+        f"（中位 {median_s:.2f} s，最差 {worst_s:.2f} s）"
+    )
     write_results(results, summary, args.output_prefix)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
