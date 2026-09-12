@@ -72,23 +72,25 @@ from problem3_geometry import (
     two_opt_open,
     unit_from_deg,
 )
-from problem3_local_sim import LocalSimulator, MeasureResult, Source
-from problem3_strategy import (
-    ActionLogger,
+from problem3_strategy import ActionLogger
+from simulator import (
     BEARING_ERROR_DEG,
     CHANNEL_MAX,
     CHANNEL_MIN,
     CLEAR_FAIL_TIME_S,
     CLEAR_RADIUS,
     CLEAR_SUCCESS_TIME_S,
+    LocalSimulator,
     MAX_RECEIVE_RADIUS,
     MEASURE_TIME_S,
     MIN_RECEIVE_RADIUS,
     MOVE_SPEED_MPS,
+    MeasureResult,
     NEAR_RADIUS,
     SOURCE_COUNT_MAX,
     SOURCE_COUNT_MIN,
     SWITCH_TIME_S,
+    Source,
     TARGET_RADIUS,
 )
 
