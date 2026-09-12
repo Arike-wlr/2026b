@@ -5,5 +5,5 @@ __pycache__/
 logs/
 q3_logs/
 research/
-outputs/
+*outputs/
 trial/

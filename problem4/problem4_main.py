@@ -117,7 +117,7 @@ def main() -> None:
     else:
         print("平均单源定位清除时间：无（本局没有清除任何干扰源）")
     print(f"巡检结束时刻：{survey_time_s / 60.0:.2f} min")
-    print(f"收尾 TSP 计入归原点代价：{summary.get('route_end_at_origin', True)}")
+    # print(f"收尾 TSP 计入归原点代价：{summary.get('route_end_at_origin', True)}")
     print(f"检测 {int(float(stats['measures']))} 次，"
           f"清除 {int(float(stats['clears']))} 次"
           f"（成功 {int(float(stats['clear_success']))} 次），"
@@ -125,14 +125,14 @@ def main() -> None:
     print(f"巡检途中复测 {int(float(stats.get('survey_remeasures', 0.0)))} 次，"
           f"巡检边插入清除 {int(float(stats.get('survey_inserted_clears', 0.0)))} 次")
     print(f"已收敛频道跳过巡检复测 {int(float(stats.get('survey_localized_skips', 0.0)))} 次")
-    print(f"收尾阶段动态融合复测 {int(float(stats.get('finish_shared_remeasures', 0.0)))} 次")
-    print(f"定向遮挡约束 {int(float(stats.get('directional_constraints', 0.0)))} 条，"
-          f"补测排序调整 {int(float(stats.get('directional_probe_reorders', 0.0)))} 次")
-    print(f"弱空频道：标记 {int(float(stats.get('weak_unknown_marked', 0.0)))} 个，"
-          f"巡检跳过 {int(float(stats.get('weak_unknown_survey_skips', 0.0)))} 次，"
-          f"收尾复核 {int(float(stats.get('weak_unknown_final_probes', 0.0)))} 次，"
-          f"复核找回 {int(float(stats.get('weak_unknown_recovered', 0.0)))} 个")
-    print(f"定向遮挡导致的无信号：{summary['probe_no_signal_count']} 次（补测阶段）")
+    # print(f"收尾阶段动态融合复测 {int(float(stats.get('finish_shared_remeasures', 0.0)))} 次")
+    # print(f"定向遮挡约束 {int(float(stats.get('directional_constraints', 0.0)))} 条，"
+    #       f"补测排序调整 {int(float(stats.get('directional_probe_reorders', 0.0)))} 次")
+    # print(f"弱空频道：标记 {int(float(stats.get('weak_unknown_marked', 0.0)))} 个，"
+    #       f"巡检跳过 {int(float(stats.get('weak_unknown_survey_skips', 0.0)))} 次，"
+    #       f"收尾复核 {int(float(stats.get('weak_unknown_final_probes', 0.0)))} 次，"
+    #       f"复核找回 {int(float(stats.get('weak_unknown_recovered', 0.0)))} 个")
+    # print(f"定向遮挡导致的无信号：{summary['probe_no_signal_count']} 次（补测阶段）")
     print(f"网格兜底：{summary['grid_fallback_count']} 次，"
           f"最终可行域半径上界：{float(summary['max_final_radius_m']):.2f} m")
     print(f"通信日志：{robot.log_path}")

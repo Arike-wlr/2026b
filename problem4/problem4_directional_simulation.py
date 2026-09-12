@@ -108,9 +108,9 @@ COVER_LATTICE_SIDE_M = CLEAR_RADIUS * math.sqrt(3.0) * 0.999
 TRIANGULAR_LATTICE_SIDE_M = 999.0
 TRIANGULAR_LATTICE_OFFSET = (1.0 / 12.0, 1.0 / 12.0)
 
-# 第一次测向后用于拉开交会角的固定候选补测点，见式 Q± = S + 750u ± 600v
-PROBE_FORWARD_M = 750.0
-PROBE_SIDE_M = 600.0
+# 第一次测向后用于拉开交会角的固定候选补测点，见式 Q± = S + 300u ± 200v
+PROBE_FORWARD_M = 300.0
+PROBE_SIDE_M = 200.0
 
 # β-Cautious（Vander Hook / Tokekar / Isler）迁移：
 # Lemma 1 给出"补测必须站多远"，使补测落在源背后的（模糊）概率不超过 β：
