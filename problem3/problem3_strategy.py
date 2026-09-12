@@ -4962,22 +4962,11 @@ def write_results(
     )
 
 
-def selected_seeds(
-    start: int,
-    count: int,
-    minimum_source_count: int,
-    maximum_source_count: int,
-) -> list[int]:
-    from problem3_local_sim import LocalSimulator
-
-    seeds = []
-    seed = start
-    while len(seeds) < count:
-        source_count = len(LocalSimulator(seed).sources)
-        if minimum_source_count <= source_count <= maximum_source_count:
-            seeds.append(seed)
-        seed += 1
-    return seeds
+def resolve_random_state(random_state: int | None) -> int:
+    """未显式指定种子时，每次运行重新取一个随机种子（并写进结果便于复现）。"""
+    if random_state is not None:
+        return int(random_state)
+    return int(np.random.default_rng().integers(0, 2**31 - 1))
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -4985,9 +4974,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="问题3 策略本地随机测试（离线，不联网）",
     )
     parser.add_argument("--cases", type=int, default=20)
-    parser.add_argument("--random-state", type=int, default=42)
-    parser.add_argument("--min-source-count", type=int, default=10)
-    parser.add_argument("--max-source-count", type=int, default=12)
+    parser.add_argument(
+        "--random-state",
+        type=int,
+        default=None,
+        help="随机种子；不指定则每次运行都重新随机（结果里会记录本次种子）",
+    )
+    parser.add_argument(
+        "--source-count",
+        type=int,
+        default=None,
+        help="固定每个案例的干扰源数（例如 10）；默认在题面的 10~16 之间随机",
+    )
     parser.add_argument("--gain-threshold", type=float, default=DEFAULT_PIGGYBACK_GAIN_M2)
     parser.add_argument(
         "--disable-finish-exception",
@@ -5045,6 +5043,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.source_count is not None and not (
+        SOURCE_COUNT_MIN <= args.source_count <= CHANNEL_MAX
+    ):
+        raise SystemExit(
+            f"--source-count 必须在 {SOURCE_COUNT_MIN}..{CHANNEL_MAX} 之间"
+        )
     strategy_class, _ = build_strategy(
         hex_cover=args.hex_cover,
         gain_threshold_m2=args.gain_threshold,
@@ -5060,19 +5064,20 @@ def main(argv: list[str] | None = None) -> int:
         enable_neighborhood_cover=args.neighborhood_cover,
         neighborhood_iterations=args.neighborhood_iterations,
     )
+    random_state = resolve_random_state(args.random_state)
+    source_hint = (
+        f"每个案例固定 {args.source_count} 个源"
+        if args.source_count is not None
+        else "源数在 10~16 随机"
+    )
     print(
-        f"随机状态 {args.random_state}（{args.cases} 个案例，"
-        f"源数在 {args.min_source_count}~{args.max_source_count} 随机；"
-        f"复现本次运行请加 --random-state {args.random_state}）"
+        f"随机状态 {random_state}（{args.cases} 个案例，{source_hint}；"
+        f"复现本次运行请加 --random-state {random_state}）"
     )
-    seeds = selected_seeds(
-        args.random_state,
-        args.cases,
-        args.min_source_count,
-        args.max_source_count,
-    )
+    seeds = [random_state + index for index in range(args.cases)]
     results = [
-        run_case(index + 1, seed, strategy_class) for index, seed in enumerate(seeds)
+        run_case(index + 1, seed, strategy_class, num_sources=args.source_count)
+        for index, seed in enumerate(seeds)
     ]
     # 逐案例明细（与 problem4 本地批量同版式）
     for result in results:
@@ -5098,7 +5103,7 @@ def main(argv: list[str] | None = None) -> int:
             f"｜移动 {float(result['movement_time_s']) / 60.0:7.2f} min"
             f"｜动作 {action_min:7.2f} min"
         )
-    summary = summarize(results, args.random_state)
+    summary = summarize(results, random_state)
     summary["strategy"] = (
         "q3_empty_channel_hex_cover" if args.hex_cover
         else "q3_empty_channel_piggyback_threshold"
@@ -5106,7 +5111,7 @@ def main(argv: list[str] | None = None) -> int:
     summary["gain_threshold_m2"] = args.gain_threshold
     summary["hex_cover"] = args.hex_cover
     summary["ring_radius_m"] = args.ring_radius
-    summary["selected_seeds"] = seeds
+    summary["seeds"] = seeds
     per_source_values = [
         float(result["seconds_per_source"])
         for result in results
@@ -5121,7 +5126,8 @@ def main(argv: list[str] | None = None) -> int:
         f"（中位 {median_s:.2f} s，最差 {worst_s:.2f} s）"
     )
     write_results(results, summary, args.output_prefix)
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    # 完整汇总已写入 <output-prefix>.json；如仍需打印，可取消下一行注释：
+    # print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 
 

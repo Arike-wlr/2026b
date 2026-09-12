@@ -1925,7 +1925,8 @@ def main() -> int:
         f"（中位 {float(summary['median_clear_time_s']):.2f} s，"
         f"最差 {float(summary['max_clear_time_s']):.2f} s）"
     )
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    # 如确需完整汇总，可取消下一行注释（会输出大段 JSON）：
+    # print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 
 
