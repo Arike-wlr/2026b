@@ -811,7 +811,7 @@ class Problem4Strategy:
     MAX_SURVEY_EDGE_DETOUR_M = 375.0
     LOW_DENSITY_SURVEY_EDGE_DETOUR_M = 500.0
     LOW_DENSITY_DETECTED_LIMIT = 10
-    MIN_SURVEY_CROSSING_ANGLE_DEG = 25.0
+    MIN_SURVEY_CROSSING_ANGLE_DEG = 0.0
     # 迁移自 q3_empty_channel_strategy 的三个判据（都只作用于"可选动作"，不影响完备性）：
     # 1) 边际收益：顺路复测只在"预期少跑的距离/5 - 本次花费 > 余量"时才做；
     # 2) completes 例外：若这一次测向就能把可行域压到可直接清除，无条件下做；
@@ -847,6 +847,7 @@ class Problem4Strategy:
         weak_unknown_pruning_enabled: bool = False,
         weak_unknown_min_no_signal_points: int | None = None,
         weak_unknown_min_angle_coverage_deg: float | None = None,
+        outer_skip_mode: str | None = None,
         route_end_at_origin: bool | None = None,
         time_margin_s: float = 30.0,
     ):
@@ -864,6 +865,7 @@ class Problem4Strategy:
             if weak_unknown_min_angle_coverage_deg is None
             else float(weak_unknown_min_angle_coverage_deg)
         )
+        self.outer_skip_mode = outer_skip_mode
         self.route_end_at_origin = (
             self.ROUTE_END_AT_ORIGIN
             if route_end_at_origin is None
@@ -876,6 +878,7 @@ class Problem4Strategy:
             channel: [] for channel in self.channels
         }
         self.detected: set[int] = set()
+        self._inner_direction_detected: set[int] = set()
         self.cleared: set[int] = set()
         self.weak_unknown_channels: set[int] = set()
         self.unknown_no_signal_points: dict[int, list[Point]] = {
@@ -1134,6 +1137,35 @@ class Problem4Strategy:
         self.stats["weak_unknown_marked"] += 1
 
     # ---------------------------------------------------------------- 阶段A
+    def _station_is_outer(self, point: Point) -> bool:
+        """按到原点距离区分外圈站（>1400 m）；原点与内圈站（930 m）均判为内圈。"""
+        return math.hypot(float(point[0]), float(point[1])) > 1400.0
+
+    def _outer_skip_channel(self, channel: int, station: Point) -> bool:
+        """外圈站是否跳过某已检出频道的复测（``outer_skip_mode``，默认 ``None``=关）。
+
+        该开关对应"外圈只测内圈没收到过 direction 的频道"这一稳值设想，**实测否决**：
+
+        * 设想：外圈 1863 m 几何差，已检出频道交给内圈 930 m 复测即可，外圈省下的
+          复测可缩短巡检、压低总时间方差。
+        * 实测（seed 20260912，10 源）：开关一开，外圈复测被跳过，但内圈只给 1~2 根
+          方位线的弱源来不及在巡检中定位 → 推到收尾；收尾补测 + 路程把省下的全吃掉
+          还倒贴：总时间 6565→7328 s，收尾段 0→1288 s。单例即明显恶化；机理上外圈长
+          基线是弱源定位关键，砍掉必推高收尾，故整体预期不降反升（完整 50 例 A/B 因
+          结论已明、由用户中止）。
+        * 根因：纯方位定位的沿方位精度 σ_r≈d²σ_β/L，外圈长基线（L≈1800）比内圈
+          （L≈500）更能把可行域锁死（见 ``_needs_free_survey_measurement`` 注释）；
+          外圈复测不是冗余，而是弱源定位的关键基线，砍掉即牺牲定位、推高收尾。
+        * 结论：该规则**不采用**——它恶化均值与方差，与稳值目标相悖。
+        """
+        if self.outer_skip_mode is None or not self._station_is_outer(station):
+            return False
+        if self.outer_skip_mode == "detected_by_inner":
+            return channel in self._inner_direction_detected
+        if self.outer_skip_mode == "localized":
+            return self._circle(channel).radius <= SAFE_LOCALIZATION_RADIUS_M
+        return False
+
     def run_survey(self) -> float:
         """访问全部 25 个安全点；清除插入后动态重排剩余路线。
 
@@ -1172,11 +1204,11 @@ class Problem4Strategy:
                     self.weak_unknown_channels - self.detected
                 )
             if self.survey_detected_channels:
-                channels.update(
-                    channel
-                    for channel in self.detected - self.cleared
-                    if self._needs_free_survey_measurement(channel, station)
-                )
+                for channel in self.detected - self.cleared:
+                    if self._outer_skip_channel(channel, station):
+                        continue
+                    if self._needs_free_survey_measurement(channel, station):
+                        channels.add(channel)
             ordered = sorted(channels, reverse=visit_index % 2 == 1)
             current = self.robot.current_channel
             if current in ordered:
@@ -1193,6 +1225,8 @@ class Problem4Strategy:
                 self._record_measurement(
                     channel, station, result.result, result.svd_deg
                 )
+                if result.result == "direction" and not self._station_is_outer(station):
+                    self._inner_direction_detected.add(channel)
                 # 题面给出 16 个源是硬上限：全部找到后后续测点不可能再有新源
                 if len(self.detected) >= SOURCE_COUNT_MAX:
                     return self._end_survey()
@@ -1270,6 +1304,18 @@ class Problem4Strategy:
             self._clear_circle(channel, circle)
 
     def _survey_edge_detour_limit(self) -> float:
+        """巡检顺路清除的绕行上限（低密度时放宽）。
+
+        注意：本函数只在 ``dynamic_survey_route=False`` 的 ``else`` 分支
+        （``_clear_targets_near_next_survey_edge``）被查阅。生产默认
+        ``dynamic_survey_route=True`` 时，已定位源的清除走"把清除中心插入最优开放
+        路线"那一条（``run_survey`` 动态分支），**完全不经过本上限**。
+
+        曾评估"放宽绕行上限让清除尽量塞进巡检段、压低收尾方差"：把
+        ``LOW_DENSITY_SURVEY_EDGE_DETOUR_M``/``MAX_SURVEY_EDGE_DETOUR_M`` 从 375/500 m
+        调到 750/1000 m 跑 50 例，4 档配置结果逐字节相同——该旋钮在默认配置下是死的，
+        调它不影响任何指标。**否决**：此路不通。
+        """
         if len(self.detected) <= self.LOW_DENSITY_DETECTED_LIMIT:
             return self.LOW_DENSITY_SURVEY_EDGE_DETOUR_M
         return self.MAX_SURVEY_EDGE_DETOUR_M
@@ -1720,6 +1766,21 @@ class Problem4Strategy:
         self._record_measurement(channel, point, result.result, result.svd_deg)
 
     def _grid_clear(self, channel: int) -> None:
+        """网格兜底清除：可行域三角格点遍历，最后安全网。
+
+        曾评估"废掉网格兜底、全程用双重交会 + 动态逼近（即现有 ``_probe_options`` 的
+        Q± 双重补测点 + ``_clear_circle`` 两次逼近）替代"：
+
+        * 现有定位/清除主干**本来就是**双重交会动态逼近——``_probe_options`` 的
+          ``Q±=S+300u±200v`` 把交会角拉开，``_clear_circle`` 圆心清失败后在命中点
+          重测示向、算 ``repair_point`` 再逼近。网格兜底只是最后 ~5% 的安全网。
+        * 它跟"10 源稳值"**正交**：网格兜底是 1~2 次 × ~35 m 格点的有界近常量小步，
+          触发于约 1/3 的用例（现有 sweep 统计：触发率 ~33%，均值 ~0.37，最大 2 次），
+          不碰收尾段移动路程（8% CV 的真正来源）。换掉它**不会**收窄分布。
+        * 废除风险：极端几何下 ``_probe_options`` 取空（找不到能缩域的补测点），动态
+          逼近独立兜底会漏检。故保留网格兜底——它是鲁棒性/整洁度项，不是稳定性杠杆。
+        **否决废掉**。
+        """
         self.grid_fallback_count += 1
         clear_by_oriented_triangular_cover(
             self.robot,
@@ -1815,6 +1876,7 @@ def run_problem4_case(
     weak_unknown_pruning_enabled: bool = False,
     weak_unknown_min_no_signal_points: int | None = None,
     weak_unknown_min_angle_coverage_deg: float | None = None,
+    outer_skip_mode: str | None = None,
     route_end_at_origin: bool | None = None,
     source_count: int | None = None,
 ) -> Problem4CaseResult:
@@ -1844,6 +1906,7 @@ def run_problem4_case(
         weak_unknown_pruning_enabled=weak_unknown_pruning_enabled,
         weak_unknown_min_no_signal_points=weak_unknown_min_no_signal_points,
         weak_unknown_min_angle_coverage_deg=weak_unknown_min_angle_coverage_deg,
+        outer_skip_mode=outer_skip_mode,
         route_end_at_origin=route_end_at_origin,
     )
 
@@ -1859,6 +1922,7 @@ def _evaluate_case(
     weak_unknown_pruning_enabled: bool = False,
     weak_unknown_min_no_signal_points: int | None = None,
     weak_unknown_min_angle_coverage_deg: float | None = None,
+    outer_skip_mode: str | None = None,
     route_end_at_origin: bool | None = None,
 ) -> Problem4CaseResult:
     """在本地仿真器上跑一个给定场景，并做真值校验（漏检、定向判定假阳性）。"""
@@ -1870,6 +1934,7 @@ def _evaluate_case(
         weak_unknown_pruning_enabled=weak_unknown_pruning_enabled,
         weak_unknown_min_no_signal_points=weak_unknown_min_no_signal_points,
         weak_unknown_min_angle_coverage_deg=weak_unknown_min_angle_coverage_deg,
+        outer_skip_mode=outer_skip_mode,
         route_end_at_origin=route_end_at_origin,
     )
     summary = strategy.run()
@@ -2231,7 +2296,7 @@ def main() -> int:
         weak_unknown_min_angle_coverage_deg=args.weak_unknown_min_coverage,
         route_end_at_origin=not args.no_route_end_at_origin,
     )
-    write_problem4_results(results, summary, args.output_prefix)
+    # write_problem4_results(results, summary, args.output_prefix)
 
     # 逐案例明细（每个案例的单源平均定位清除时间等）
     for result in results:
