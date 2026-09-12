@@ -23,32 +23,28 @@
 3. 巡检途中把已经可靠定位的清除中心与尚未访问的安全检测点放入同一条
    滚动开放路径，避免走完整条巡检骨架后再折返清除。
 
-本模块只提供策略、本地仿真器与**批量验证**入口；单元测试与随机场景验证
-（每个案例恰好 10 个源）在 ``problem4/test_problem4.py``。
+本模块只提供策略、本地仿真器与**批量验证**入口；开发过程中被评估/否决方案的
+实测依据汇总在 ``problem4/尝试记录.md``。
 
 用法::
 
-    python problem4/problem4_directional_simulation.py                 # 本地 30 个案例，种子随机
-    python problem4/problem4_directional_simulation.py --cases 200
-    python problem4/problem4_directional_simulation.py --cases 10 --source-count 10
-    python problem4/problem4_directional_simulation.py --random-state 42   # 复现某次运行
+    python problem4/problem4_main.py                                   # 本地 30 个案例，种子随机
+    python problem4/problem4_main.py --cases 200
+    python problem4/problem4_main.py --cases 10 --source-count 10
+    python problem4/problem4_main.py --random-state 42                 # 复现某次运行
 
 不指定 ``--random-state`` 时每次运行都重新随机源的位置、接收半径、
 全向/定向搭配与发射方向；``--source-count 10`` 可把每个案例固定为 10 个源。
 """
-
 from __future__ import annotations
 
 import argparse
-import csv
 import itertools
 import json
 import math
 import os
 import sys
-from dataclasses import asdict, dataclass
-from pathlib import Path
-from statistics import NormalDist
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -60,7 +56,7 @@ for _path in (_ROOT, _HERE, _P3):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from problem3_geometry import (  # noqa: E402
+from problem3_geometry import (
     circumscribed_polygon,
     clip_wedge,
     distance_point_to_polygon,
@@ -72,8 +68,8 @@ from problem3_geometry import (  # noqa: E402
     two_opt_open,
     unit_from_deg,
 )
-from problem3_local_sim import LocalSimulator, MeasureResult, Source  # noqa: E402
-from problem3_strategy import (  # noqa: E402
+from problem3_local_sim import LocalSimulator, MeasureResult, Source
+from problem3_strategy import (
     BEARING_ERROR_DEG,
     CHANNEL_MAX,
     CHANNEL_MIN,
@@ -97,34 +93,21 @@ Point = tuple[float, float]
 # 25 点巡检方案与策略参数
 # --------------------------------------------------------------------------- #
 INNER_DODECAGON_RADIUS_M = 930.0
-OUTER_DODECAGON_RADIUS_M = TARGET_RADIUS / math.cos(math.pi / 12.0)  # 1863.497 m
-DODECAGON_INTERLEAVE_ANGLE_DEG = 15.0  # 内外两圈错开角
+OUTER_DODECAGON_RADIUS_M = TARGET_RADIUS / math.cos(math.pi / 12.0)
+DODECAGON_INTERLEAVE_ANGLE_DEG = 15.0
 
 # 可行域半径不超过该值时，两次清除法（先圆心、再按测向偏移）保证 20 m 内命中
 SAFE_LOCALIZATION_RADIUS_M = 58.0
 # 清除网格兜底用的三角格点边长：覆盖半径恰为 CLEAR_RADIUS 的 0.999 倍
 COVER_LATTICE_SIDE_M = CLEAR_RADIUS * math.sqrt(3.0) * 0.999
-# 备选的等边三角格点巡检方案（边长 999 m < 最小接收半径 1000 m）
-TRIANGULAR_LATTICE_SIDE_M = 999.0
-TRIANGULAR_LATTICE_OFFSET = (1.0 / 12.0, 1.0 / 12.0)
 
 # 第一次测向后用于拉开交会角的固定候选补测点，见式 Q± = S + 300u ± 200v
 PROBE_FORWARD_M = 300.0
 PROBE_SIDE_M = 200.0
 
-# β-Cautious（Vander Hook / Tokekar / Isler）迁移：
-# Lemma 1 给出"补测必须站多远"，使补测落在源背后的（模糊）概率不超过 β：
-#     r(i) = σx / sqrt(σβ² − σs²),  σβ = (π/2)·Φ⁻¹(1 − β/2)
-# β 是**感知模糊风险**的容忍度（不是定位精度），β→0 时站距发散；
-# 方向取"垂直于最大不确定方向"（可行域最长轴的法线），站距随不确定度自适应。
-CAUTIOUS_PROBE_BETA = 0.05
-CAUTIOUS_SENSOR_SIGMA_RAD = math.radians(BEARING_ERROR_DEG)
-CAUTIOUS_MIN_PROBE_M = 25.0
-CAUTIOUS_MAX_PROBE_M = 900.0
-
 
 class TimeBudgetExceeded(RuntimeError):
-    """现实/虚拟时间不足以完成剩余动作。"""
+    pass
 
 
 def distance(first: Point, second: Point) -> float:
@@ -137,7 +120,6 @@ def distance(first: Point, second: Point) -> float:
 @dataclass(frozen=True)
 class DirectionObservation:
     """一次 ``direction`` 观测：测点位置 + 示向度（度）。"""
-
     position: Point
     bearing_deg: float
 
@@ -450,98 +432,13 @@ def concentric_dodecagon_route(
     inner_radius_m: float | None = None,
     outer_radius_m: float | None = None,
 ) -> list[Point]:
-    """25 点巡检路线：固定 25 点不变，用开放路径排序减少途中折返。
-
-    为什么不改成"先外圈再内圈，跑完外圈就按 no_signal 剪枝"（曾评估过）：
-
-    1. 判空必须相对**源**而非圆心。题面只给 r_c ~ U(1000,1500)，源可在 1800 m
-       盘内任意处；外圈站距圆心恒为 1863.497 m，但距源的距离中位仅 654 m
-       （实测 93.6% 的源距某个外圈站 < 1500 m），"距圆心 > 1300/1500"不等于超距。
-    2. 该方案下"保守阈值 1500"与"激进阈值 1300"完全等价：内圈 930 m < 1300，
-       外圈 1863.5 m > 1500，两者之间没有站点，所以并不更安全。
-    3. 外圈单独对 |G| < 1863.497 - 1000 = 863.497 m 的区域零覆盖（任一外圈站
-       距该区域里的源都 ≥ 1000 m = r_c 下界），因此外圈跑完**在数学上不可能**
-       对中心区判空；而中心区正是内圈存在的理由。
-    4. 实测 50 例 × 10 源：按"外圈全 no_signal 即剪枝"会误剪 **19.2%** 的源
-       （1.92/10，永久漏检，77% 是 |G| 中位 577 m 的中心源），换来约 775 s/例
-       （≈11.8%）的测量节省；而外圈优先的里程 19694 m 比现路线 17831 m 多
-       1863 m（@5 m/s 即 +373 s），净收益仅约 6%~8%——拿漏检换这点时间不划算。
+    """25 点巡检路线的固定顺序版本（路线长度对照/回归验证用，生产路径走动态重排）。
     """
     stations = concentric_dodecagon_stations(inner_radius_m, outer_radius_m)
     origin = stations[0]
     nodes = {index: point for index, point in enumerate(stations[1:], start=1)}
     order = optimized_open_route(origin, nodes)
     return [origin] + [nodes[index] for index in order]
-
-
-def triangular_lattice_stations(
-    side_m: float = TRIANGULAR_LATTICE_SIDE_M,
-    offset: tuple[float, float] = TRIANGULAR_LATTICE_OFFSET,
-) -> list[Point]:
-    """备选巡检方案：平移的等边三角格点（边长 < 1000 m）。
-
-    只保留与半径 1800 m 目标圆相交的三角形所用到的顶点，比"大包围圆内所有格点"少很多。
-
-    注意它**只是备选**：边长 999 m 时确实满足 (G,e) 认证（实测空隙 178.581° ≤ 180°，
-    即对任意位置、任意发射方向都必被检出——比"覆盖半径 s/√3 = 577 m < 1000 m"这个
-    纯距离论证更强），且点数恰好同为 25；但它的巡检路线是 **28171 m**，比同心双重
-    十二边形的 **17831 m** 多 58%（蛇形横穿大矩形 vs 沿圆环绕行）。行进占策略总时间
-    约 70%，多走 10340 m ⇒ 每例多约 2068 s。故巡检点仍用同心十二边形，
-    三角格点的正确用途是清除兜底（见 ``clear_by_oriented_triangular_cover``，
-    边长 ``COVER_LATTICE_SIDE_M ≈ 34.6 m``，保证可行域内任一点 20 m 内必有格点）。
-    """
-    if not 0.0 < side_m < MIN_RECEIVE_RADIUS:
-        raise ValueError("三角格点边长必须落在 (0, 1000)")
-    if len(offset) != 2 or not all(math.isfinite(value) for value in offset):
-        raise ValueError("格点偏移必须包含两个有限系数")
-
-    height = side_m * math.sqrt(3.0) / 2.0
-    offset_x = offset[0] * side_m + offset[1] * side_m / 2.0
-    offset_y = offset[1] * height
-
-    def lattice_point(index: tuple[int, int]) -> Point:
-        column, row = index
-        return (
-            offset_x + column * side_m + row * side_m / 2.0,
-            offset_y + row * height,
-        )
-
-    index_bound = math.ceil((TARGET_RADIUS + 2.0 * side_m) / height) + 2
-    used_indices: set[tuple[int, int]] = set()
-    for column in range(-index_bound, index_bound + 1):
-        for row in range(-index_bound, index_bound + 1):
-            faces = (
-                ((column, row), (column + 1, row), (column, row + 1)),
-                (
-                    (column + 1, row + 1),
-                    (column + 1, row),
-                    (column, row + 1),
-                ),
-            )
-            for face in faces:
-                triangle = np.asarray([lattice_point(index) for index in face])
-                if (
-                    distance_point_to_polygon((0.0, 0.0), triangle)
-                    <= TARGET_RADIUS + 1e-9
-                ):
-                    used_indices.update(face)
-
-    return sorted(
-        (lattice_point(index) for index in used_indices),
-        key=lambda point: (point[1], point[0]),
-    )
-
-
-def triangular_lattice_route(
-    side_m: float = TRIANGULAR_LATTICE_SIDE_M,
-    scan_origin: bool = False,
-) -> list[Point]:
-    points = triangular_lattice_stations(side_m)
-    origin = (0.0, 0.0)
-    nodes = {index: point for index, point in enumerate(points)}
-    route = optimized_open_route(origin, nodes)
-    ordered = [nodes[index] for index in route]
-    return ([origin] if scan_origin else []) + ordered
 
 
 def clear_by_oriented_triangular_cover(
@@ -659,7 +556,6 @@ def clear_by_oriented_triangular_cover(
 @dataclass
 class MixedSource(Source):
     """在问题 3 的 ``Source`` 上增加"是否定向 + 发射方向"。"""
-
     directional: bool = False
     emission_angle_rad: float | None = None
 
@@ -742,7 +638,6 @@ def directional_source_blocks(source, x: float, y: float) -> bool:
 
 class DirectionalLocalSimulator(LocalSimulator):
     """本地规则仿真器：与 ``client.RobotClient`` 接口一致，额外支持定向遮挡。"""
-
     def __init__(self, sources: list[MixedSource], error_seed: int = 0, **kwargs):
         super().__init__(error_seed, num_sources=len(sources), **kwargs)
         self.sources: dict[int, MixedSource] = {
@@ -803,14 +698,10 @@ class DirectionalLocalSimulator(LocalSimulator):
 # --------------------------------------------------------------------------- #
 class Problem4Strategy:
     """定向源场景下的巡检 → 定位 → 清除策略，只依赖类 RobotClient 接口。"""
-
     PROBE_NODE_OFFSET = 100
     SURVEY_NODE_OFFSET = 1000
     MAX_PROBE_COMBINATIONS = 64
     MAX_EXACT_ROUTE_NODES = 12
-    MAX_SURVEY_EDGE_DETOUR_M = 375.0
-    LOW_DENSITY_SURVEY_EDGE_DETOUR_M = 500.0
-    LOW_DENSITY_DETECTED_LIMIT = 10
     MIN_SURVEY_CROSSING_ANGLE_DEG = 0.0
     # 迁移自 q3_empty_channel_strategy 的三个判据（都只作用于"可选动作"，不影响完备性）：
     # 1) 边际收益：顺路复测只在"预期少跑的距离/5 - 本次花费 > 余量"时才做；
@@ -819,53 +710,17 @@ class Problem4Strategy:
     MARGINAL_REMEASURE_MARGIN_S = 2.0
     MARGINAL_REMEASURE_MARGIN_RELAXED_S = 0.0
     RESUME_REMEASURE_AT_KNOWN_SOURCES = 8
-    # β-Cautious 自适应补测（论文 Algorithm 1 的一步贪心）：默认**关闭**的消融项。
-    # 实测（10 例×10 源，种子 1000-1009 / 2000-2009）：10 例里只被评估 7 次、
-    # 3 次真正用上，单源时间 643.39→643.54 / 661.05→662.01 s，收益 ≈ 0；
-    # 原因是收尾阶段的补测几乎用不到——约 9.4 次/例的清除已在巡检途中完成。
-    CAUTIOUS_PROBE_ENABLED = False
-    CAUTIOUS_MAX_PROBE_STEPS = 3
-    ADAPTIVE_PROBE_INDEX = 90
-    # 「弱空频道剪枝」只作消融，默认关闭且**当前阈值不可达**：25 点方案的 24 个
-    # 非圆心站方位恰好是 0,15,...,345°，角覆盖上限 = 345°（需访完全部 24 站），
-    # 因此 350° 永不触发（实测 20 例标记 0 次、跳过 0 次，时间与基线一致）。
-    # 一旦把阈值降到可达区间就会开始漏检（20 例×10 源实测）：
-    #   330° → 单源 631.8 s（-3.5%），漏检 1/20；300° → 509.3 s（-22%），漏检 7/20；
-    #   270° → 517.6 s（-21%），漏检 6/20。
-    # 原因：判空的正确条件是"对每个候选源位置 G，1000 m 内的测点都能围住 G"，
-    # 而本规则只检查测点相对**原点**的角覆盖，且把超距测点也当成证据。
-    WEAK_UNKNOWN_MIN_NO_SIGNAL_POINTS = 15
-    WEAK_UNKNOWN_MIN_ANGLE_COVERAGE_DEG = 350.0
-    WEAK_UNKNOWN_FINAL_PROBES = 3
     ROUTE_END_AT_ORIGIN = False
 
     def __init__(
         self,
         robot,
         survey_detected_channels: bool = True,
-        dynamic_survey_route: bool = True,
-        weak_unknown_pruning_enabled: bool = False,
-        weak_unknown_min_no_signal_points: int | None = None,
-        weak_unknown_min_angle_coverage_deg: float | None = None,
-        outer_skip_mode: str | None = None,
         route_end_at_origin: bool | None = None,
         time_margin_s: float = 30.0,
     ):
         self.robot = robot
         self.survey_detected_channels = survey_detected_channels
-        self.dynamic_survey_route = dynamic_survey_route
-        self.weak_unknown_pruning_enabled = weak_unknown_pruning_enabled
-        self.weak_unknown_min_no_signal_points = (
-            self.WEAK_UNKNOWN_MIN_NO_SIGNAL_POINTS
-            if weak_unknown_min_no_signal_points is None
-            else int(weak_unknown_min_no_signal_points)
-        )
-        self.weak_unknown_min_angle_coverage_deg = (
-            self.WEAK_UNKNOWN_MIN_ANGLE_COVERAGE_DEG
-            if weak_unknown_min_angle_coverage_deg is None
-            else float(weak_unknown_min_angle_coverage_deg)
-        )
-        self.outer_skip_mode = outer_skip_mode
         self.route_end_at_origin = (
             self.ROUTE_END_AT_ORIGIN
             if route_end_at_origin is None
@@ -878,12 +733,7 @@ class Problem4Strategy:
             channel: [] for channel in self.channels
         }
         self.detected: set[int] = set()
-        self._inner_direction_detected: set[int] = set()
         self.cleared: set[int] = set()
-        self.weak_unknown_channels: set[int] = set()
-        self.unknown_no_signal_points: dict[int, list[Point]] = {
-            channel: [] for channel in self.channels
-        }
         self.directional_block_points: dict[int, list[Point]] = {
             channel: [] for channel in self.channels
         }
@@ -906,10 +756,6 @@ class Problem4Strategy:
             "finish_shared_remeasures": 0.0,
             "directional_constraints": 0.0,
             "directional_probe_reorders": 0.0,
-            "weak_unknown_marked": 0.0,
-            "weak_unknown_survey_skips": 0.0,
-            "weak_unknown_final_probes": 0.0,
-            "weak_unknown_recovered": 0.0,
             "survey_remeasure_value_skips": 0.0,
             "survey_remeasure_completes": 0.0,
         }
@@ -946,7 +792,7 @@ class Problem4Strategy:
         try:
             if getattr(self.robot, "in_session", False):
                 self.robot.exit()
-        except Exception:  # noqa: BLE001 - 收尾失败不应掩盖主流程结果
+        except Exception:
             pass
 
     def summary(self) -> dict[str, object]:
@@ -955,7 +801,6 @@ class Problem4Strategy:
         return {
             "survey_station_count": self.survey_visited_station_count,
             "survey_planned_station_count": len(concentric_dodecagon_stations()),
-            "dynamic_survey_route": self.dynamic_survey_route,
             "survey_measurement_count": self.survey_measurement_count,
             "detected": len(self.detected),
             "cleared": len(self.cleared),
@@ -972,7 +817,6 @@ class Problem4Strategy:
             "complete": not pending and not self.incomplete_reason,
             "incomplete_reason": self.incomplete_reason,
             "pending_channels": pending,
-            "weak_unknown_channels": sorted(self.weak_unknown_channels),
             "route_end_at_origin": self.route_end_at_origin,
             "survey_time_s": self.survey_end_time_s,
             "virtual_time_s": float(self.robot.virtual_time_s),
@@ -1046,7 +890,6 @@ class Problem4Strategy:
     ) -> None:
         if result == "direction" and bearing_deg is not None:
             self.detected.add(channel)
-            self.weak_unknown_channels.discard(channel)
             self.observations[channel].append(
                 DirectionObservation(
                     (float(point[0]), float(point[1])), float(bearing_deg)
@@ -1054,13 +897,10 @@ class Problem4Strategy:
             )
         elif result == "near":
             self.detected.add(channel)
-            self.weak_unknown_channels.discard(channel)
             if not self._clear(point[0], point[1], channel).cleared:
                 raise RuntimeError("near 结果未能清除目标")
             self.cleared.add(channel)
         elif result == "no_signal":
-            if channel not in self.detected:
-                self._record_unknown_no_signal(channel, point)
             self._certify_directional(channel, point)
         else:
             raise RuntimeError(f"未知的检测结果 {result!r}")
@@ -1098,74 +938,9 @@ class Problem4Strategy:
             channel
             for channel in self.channels
             if channel not in self.detected
-            and (
-                not self.weak_unknown_pruning_enabled
-                or channel not in self.weak_unknown_channels
-            )
         }
 
-    @staticmethod
-    def _angle_coverage_deg(points: list[Point]) -> float:
-        angles = sorted(
-            math.degrees(math.atan2(point[1], point[0])) % 360.0
-            for point in points
-            if math.hypot(point[0], point[1]) > 1e-9
-        )
-        if len(angles) < 2:
-            return 0.0
-        gaps = [
-            angles[index + 1] - angles[index]
-            for index in range(len(angles) - 1)
-        ]
-        gaps.append(angles[0] + 360.0 - angles[-1])
-        return 360.0 - max(gaps)
-
-    def _record_unknown_no_signal(self, channel: int, point: Point) -> None:
-        if not self.weak_unknown_pruning_enabled:
-            return
-        points = self.unknown_no_signal_points[channel]
-        candidate = (float(point[0]), float(point[1]))
-        if all(distance(candidate, old) > 1e-6 for old in points):
-            points.append(candidate)
-        if channel in self.weak_unknown_channels:
-            return
-        if len(points) < self.weak_unknown_min_no_signal_points:
-            return
-        if self._angle_coverage_deg(points) < self.weak_unknown_min_angle_coverage_deg:
-            return
-        self.weak_unknown_channels.add(channel)
-        self.stats["weak_unknown_marked"] += 1
-
     # ---------------------------------------------------------------- 阶段A
-    def _station_is_outer(self, point: Point) -> bool:
-        """按到原点距离区分外圈站（>1400 m）；原点与内圈站（930 m）均判为内圈。"""
-        return math.hypot(float(point[0]), float(point[1])) > 1400.0
-
-    def _outer_skip_channel(self, channel: int, station: Point) -> bool:
-        """外圈站是否跳过某已检出频道的复测（``outer_skip_mode``，默认 ``None``=关）。
-
-        该开关对应"外圈只测内圈没收到过 direction 的频道"这一稳值设想，**实测否决**：
-
-        * 设想：外圈 1863 m 几何差，已检出频道交给内圈 930 m 复测即可，外圈省下的
-          复测可缩短巡检、压低总时间方差。
-        * 实测（seed 20260912，10 源）：开关一开，外圈复测被跳过，但内圈只给 1~2 根
-          方位线的弱源来不及在巡检中定位 → 推到收尾；收尾补测 + 路程把省下的全吃掉
-          还倒贴：总时间 6565→7328 s，收尾段 0→1288 s。单例即明显恶化；机理上外圈长
-          基线是弱源定位关键，砍掉必推高收尾，故整体预期不降反升（完整 50 例 A/B 因
-          结论已明、由用户中止）。
-        * 根因：纯方位定位的沿方位精度 σ_r≈d²σ_β/L，外圈长基线（L≈1800）比内圈
-          （L≈500）更能把可行域锁死（见 ``_needs_free_survey_measurement`` 注释）；
-          外圈复测不是冗余，而是弱源定位的关键基线，砍掉即牺牲定位、推高收尾。
-        * 结论：该规则**不采用**——它恶化均值与方差，与稳值目标相悖。
-        """
-        if self.outer_skip_mode is None or not self._station_is_outer(station):
-            return False
-        if self.outer_skip_mode == "detected_by_inner":
-            return channel in self._inner_direction_detected
-        if self.outer_skip_mode == "localized":
-            return self._circle(channel).radius <= SAFE_LOCALIZATION_RADIUS_M
-        return False
-
     def run_survey(self) -> float:
         """访问全部 25 个安全点；清除插入后动态重排剩余路线。
 
@@ -1184,29 +959,17 @@ class Problem4Strategy:
         remaining = {
             index: point for index, point in enumerate(stations[1:], start=1)
         }
-        plan = (
-            []
-            if self.dynamic_survey_route
-            else optimized_open_route(stations[0], remaining)
-        )
         station = stations[0]
         visit_index = 0
 
         while True:
             self.survey_visited_station_count += 1
-            # 已清除频道与已剪枝频道**永不**被复测：``_unresolved()`` 只含"从未检出"
-            # 的频道（已剪枝的会被排除），而下面这条只从 ``detected - cleared`` 里补，
-            # 再经 ``_needs_free_survey_measurement``（对 cleared 直接返回 False）。
-            # 实测（4 例）巡检期间触碰已清除/已剪枝频道的次数均为 0。
+            # 已清除频道**永不**被复测：``_unresolved()`` 只含"从未检出"的频道，
+            # 而下面这条只从 ``detected - cleared`` 里补，再经
+            # ``_needs_free_survey_measurement``（对 cleared 直接返回 False）。
             channels = self._unresolved()
-            if self.weak_unknown_pruning_enabled:
-                self.stats["weak_unknown_survey_skips"] += len(
-                    self.weak_unknown_channels - self.detected
-                )
             if self.survey_detected_channels:
                 for channel in self.detected - self.cleared:
-                    if self._outer_skip_channel(channel, station):
-                        continue
                     if self._needs_free_survey_measurement(channel, station):
                         channels.add(channel)
             ordered = sorted(channels, reverse=visit_index % 2 == 1)
@@ -1225,8 +988,6 @@ class Problem4Strategy:
                 self._record_measurement(
                     channel, station, result.result, result.svd_deg
                 )
-                if result.result == "direction" and not self._station_is_outer(station):
-                    self._inner_direction_detected.add(channel)
                 # 题面给出 16 个源是硬上限：全部找到后后续测点不可能再有新源
                 if len(self.detected) >= SOURCE_COUNT_MAX:
                     return self._end_survey()
@@ -1234,91 +995,42 @@ class Problem4Strategy:
             if not remaining:
                 return self._end_survey()
 
-            if self.dynamic_survey_route:
-                # 把所有已经可靠定位、迟早必须访问的清除中心与剩余巡检点
-                # 放入同一开放路径。每次只执行第一个节点，随后用新观测重算。
-                while True:
-                    clear_circles: dict[int, Circle] = {}
-                    for channel in self.detected - self.cleared:
-                        circle = self._circle(channel)
-                        if circle.radius <= SAFE_LOCALIZATION_RADIUS_M:
-                            clear_circles[channel] = circle
-                    nodes = {
-                        self.SURVEY_NODE_OFFSET + node: point
-                        for node, point in remaining.items()
+            while True:
+                clear_circles: dict[int, Circle] = {}
+                for channel in self.detected - self.cleared:
+                    circle = self._circle(channel)
+                    if circle.radius <= SAFE_LOCALIZATION_RADIUS_M:
+                        clear_circles[channel] = circle
+                nodes = {
+                    self.SURVEY_NODE_OFFSET + node: point
+                    for node, point in remaining.items()
+                }
+                nodes.update(
+                    {
+                        channel: circle.center
+                        for channel, circle in clear_circles.items()
                     }
-                    nodes.update(
-                        {
-                            channel: circle.center
-                            for channel, circle in clear_circles.items()
-                        }
+                )
+                if len(nodes) <= self.MAX_EXACT_ROUTE_NODES:
+                    route = exact_open_route(self.robot.current_position, nodes)
+                else:
+                    route = optimized_open_route(
+                        self.robot.current_position, nodes
                     )
-                    if len(nodes) <= self.MAX_EXACT_ROUTE_NODES:
-                        route = exact_open_route(self.robot.current_position, nodes)
-                    else:
-                        route = optimized_open_route(
-                            self.robot.current_position, nodes
-                        )
-                    next_node = route[0]
-                    if next_node < self.SURVEY_NODE_OFFSET:
-                        self.stats["survey_inserted_clears"] += 1
-                        self._clear_circle(next_node, clear_circles[next_node])
-                        continue
+                next_node = route[0]
+                if next_node < self.SURVEY_NODE_OFFSET:
+                    self.stats["survey_inserted_clears"] += 1
+                    self._clear_circle(next_node, clear_circles[next_node])
+                    continue
 
-                    station_node = next_node - self.SURVEY_NODE_OFFSET
-                    station = remaining.pop(station_node)
-                    visit_index += 1
-                    break
-            else:
-                next_station = remaining[plan[0]]
-                self._clear_targets_near_next_survey_edge(next_station)
-                next_node = plan.pop(0)
-                station = remaining.pop(next_node)
+                station_node = next_node - self.SURVEY_NODE_OFFSET
+                station = remaining.pop(station_node)
                 visit_index += 1
+                break
 
     def _end_survey(self) -> float:
         self.survey_end_time_s = float(self.robot.virtual_time_s)
         return self.survey_end_time_s
-
-    def _clear_targets_near_next_survey_edge(self, next_station: Point) -> None:
-        """巡检途中，若顺路清除某个已定位源只需很小绕路，就顺手清掉。"""
-        max_detour = self._survey_edge_detour_limit()
-        while True:
-            best: tuple[float, int, Circle] | None = None
-            for channel in self.detected - self.cleared:
-                circle = self._circle(channel)
-                if circle.radius > SAFE_LOCALIZATION_RADIUS_M:
-                    continue
-                detour = (
-                    distance(self.robot.current_position, circle.center)
-                    + distance(circle.center, next_station)
-                    - distance(self.robot.current_position, next_station)
-                )
-                candidate = (detour, channel, circle)
-                if best is None or candidate[0:2] < best[0:2]:
-                    best = candidate
-            if best is None or best[0] > max_detour:
-                return
-            _, channel, circle = best
-            self.stats["survey_inserted_clears"] += 1
-            self._clear_circle(channel, circle)
-
-    def _survey_edge_detour_limit(self) -> float:
-        """巡检顺路清除的绕行上限（低密度时放宽）。
-
-        注意：本函数只在 ``dynamic_survey_route=False`` 的 ``else`` 分支
-        （``_clear_targets_near_next_survey_edge``）被查阅。生产默认
-        ``dynamic_survey_route=True`` 时，已定位源的清除走"把清除中心插入最优开放
-        路线"那一条（``run_survey`` 动态分支），**完全不经过本上限**。
-
-        曾评估"放宽绕行上限让清除尽量塞进巡检段、压低收尾方差"：把
-        ``LOW_DENSITY_SURVEY_EDGE_DETOUR_M``/``MAX_SURVEY_EDGE_DETOUR_M`` 从 375/500 m
-        调到 750/1000 m 跑 50 例，4 档配置结果逐字节相同——该旋钮在默认配置下是死的，
-        调它不影响任何指标。**否决**：此路不通。
-        """
-        if len(self.detected) <= self.LOW_DENSITY_DETECTED_LIMIT:
-            return self.LOW_DENSITY_SURVEY_EDGE_DETOUR_M
-        return self.MAX_SURVEY_EDGE_DETOUR_M
 
     def _needs_free_survey_measurement(self, channel: int, station: Point) -> bool:
         """判断在巡检测点上能否"免费"补一次已有频道的测向。
@@ -1470,80 +1182,6 @@ class Problem4Strategy:
                 self.probe_no_signal_count += 1
             self._record_measurement(channel, point, result.result, result.svd_deg)
 
-    def _weak_unknown_probe_candidates(self, channel: int) -> list[tuple[float, Point]]:
-        tried = self.unknown_no_signal_points[channel]
-        tried_angles = [
-            math.degrees(math.atan2(point[1], point[0])) % 360.0
-            for point in tried
-            if math.hypot(point[0], point[1]) > 1e-9
-        ]
-        stations = [
-            station
-            for station in concentric_dodecagon_route()
-            if math.hypot(station[0], station[1]) > 1e-9
-            and all(distance(station, old) > 1e-6 for old in tried)
-        ]
-        if not tried_angles:
-            return [
-                (0.0, station)
-                for station in sorted(
-                    stations,
-                    key=lambda point: distance(self.robot.current_position, point),
-                )
-            ]
-
-        def nearest_angular_gap(station: Point) -> float:
-            angle = math.degrees(math.atan2(station[1], station[0])) % 360.0
-            return min(
-                abs((angle - tried_angle + 180.0) % 360.0 - 180.0)
-                for tried_angle in tried_angles
-            )
-
-        return [
-            (nearest_angular_gap(station), station)
-            for station in sorted(
-                stations,
-                key=lambda point: (
-                    -nearest_angular_gap(point),
-                    distance(self.robot.current_position, point),
-                ),
-            )
-        ]
-
-    def _probe_weak_unknown_channels(self) -> bool:
-        if not self.weak_unknown_pruning_enabled:
-            return False
-        candidates: list[tuple[float, float, int, Point]] = []
-        for channel in sorted(self.weak_unknown_channels):
-            if channel in self.detected:
-                continue
-            for angular_gap, point in self._weak_unknown_probe_candidates(channel):
-                candidates.append(
-                    (
-                        -angular_gap,
-                        distance(self.robot.current_position, point),
-                        channel,
-                        point,
-                    )
-                )
-        candidates.sort()
-        used_channels: set[int] = set()
-        for _, _, channel, point in candidates:
-            if len(used_channels) >= self.WEAK_UNKNOWN_FINAL_PROBES:
-                break
-            if channel in used_channels or channel in self.detected:
-                continue
-            if not self._time_left():
-                return False
-            used_channels.add(channel)
-            result = self._measure(point[0], point[1], channel, is_probe=True)
-            self.stats["weak_unknown_final_probes"] += 1
-            self._record_measurement(channel, point, result.result, result.svd_deg)
-            if channel in self.detected:
-                self.stats["weak_unknown_recovered"] += 1
-                return True
-        return False
-
     def _route_score(self, route: list[int], nodes: dict[int, Point]) -> float:
         score = open_route_length(self.robot.current_position, route, nodes)
         if self.route_end_at_origin and route:
@@ -1555,8 +1193,6 @@ class Problem4Strategy:
         """未清除频道统一调度：补测缩小可行域、两次清除、网格兜底。"""
         while True:
             if not self.detected - self.cleared:
-                if self._probe_weak_unknown_channels():
-                    continue
                 return
             if not self._time_left():
                 raise TimeBudgetExceeded("仍有未清除的干扰源，但时间已不足")
@@ -1664,69 +1300,6 @@ class Problem4Strategy:
             score += separation
         return score
 
-    def _cautious_probe_point(self, channel: int) -> Point | None:
-        """β-Cautious 自适应补测点（论文 Lemma 1 / Algorithm 1）。
-
-        ``r(i) = σx / sqrt(σβ² − σs²)``，其中 ``σβ = (π/2)·Φ⁻¹(1 − β/2)``：
-        站得越远，补测落进定向源"背后"的模糊概率越低，但行程越长；β 就是该风险的
-        容忍度。方向取垂直于最大不确定方向（可行域最长轴的法线），站距随当前不确定度
-        自适应缩放（区域是硬约束而非高斯，取 σx ≈ R/2）。
-
-        只在"整块可行域都在接收半径内"时才给出候选——否则这次补测可能白跑。
-        """
-        if not self.CAUTIOUS_PROBE_ENABLED or not self.observations[channel]:
-            return None
-        observed_steps = sum(
-            1
-            for index in self.attempted_probes[channel]
-            if index >= self.ADAPTIVE_PROBE_INDEX
-        )
-        if observed_steps >= self.CAUTIOUS_MAX_PROBE_STEPS:
-            return None
-        polygon = self._polygon(channel)
-        if len(polygon) < 3:
-            return None
-        circle = minimum_enclosing_circle(polygon)
-        sigma_beta = 0.5 * math.pi * NormalDist().inv_cdf(
-            1.0 - 0.5 * CAUTIOUS_PROBE_BETA
-        )
-        denominator = max(
-            sigma_beta * sigma_beta - CAUTIOUS_SENSOR_SIGMA_RAD**2, 1e-6
-        )
-        distance_est = (circle.radius / 2.0) / math.sqrt(denominator)
-        distance_est = min(distance_est, CAUTIOUS_MAX_PROBE_M)
-        if distance_est < CAUTIOUS_MIN_PROBE_M:
-            return None
-
-        axis, _ = farthest_pair(polygon)
-        normal = (-axis[1], axis[0])
-        center = circle.center
-        candidates = [
-            (
-                center[0] + distance_est * normal[0],
-                center[1] + distance_est * normal[1],
-            ),
-            (
-                center[0] - distance_est * normal[0],
-                center[1] - distance_est * normal[1],
-            ),
-        ]
-        usable = [
-            point
-            for point in candidates
-            if max(distance(point, vertex) for vertex in polygon)
-            <= MIN_RECEIVE_RADIUS + 1e-9
-        ]
-        if not usable:
-            return None
-        return min(
-            usable,
-            key=lambda point: (
-                -self._block_separation(channel, center, point),
-                distance(self.robot.current_position, point),
-            ),
-        )
-
     def _probe_options(self, channel: int) -> list[tuple[int, Point]]:
         probes = first_probe_points(self.observations[channel][0])
         options = [
@@ -1734,14 +1307,6 @@ class Problem4Strategy:
             for index, point in enumerate(probes)
             if index not in self.attempted_probes[channel]
         ]
-        adaptive_index = self.ADAPTIVE_PROBE_INDEX + sum(
-            1
-            for index in self.attempted_probes[channel]
-            if index >= self.ADAPTIVE_PROBE_INDEX
-        )
-        adaptive = self._cautious_probe_point(channel)
-        if adaptive is not None:
-            options.insert(0, (adaptive_index, adaptive))
         if len(options) <= 1 or not self.directional_block_points[channel]:
             return options
 
@@ -1766,21 +1331,7 @@ class Problem4Strategy:
         self._record_measurement(channel, point, result.result, result.svd_deg)
 
     def _grid_clear(self, channel: int) -> None:
-        """网格兜底清除：可行域三角格点遍历，最后安全网。
-
-        曾评估"废掉网格兜底、全程用双重交会 + 动态逼近（即现有 ``_probe_options`` 的
-        Q± 双重补测点 + ``_clear_circle`` 两次逼近）替代"：
-
-        * 现有定位/清除主干**本来就是**双重交会动态逼近——``_probe_options`` 的
-          ``Q±=S+300u±200v`` 把交会角拉开，``_clear_circle`` 圆心清失败后在命中点
-          重测示向、算 ``repair_point`` 再逼近。网格兜底只是最后 ~5% 的安全网。
-        * 它跟"10 源稳值"**正交**：网格兜底是 1~2 次 × ~35 m 格点的有界近常量小步，
-          触发于约 1/3 的用例（现有 sweep 统计：触发率 ~33%，均值 ~0.37，最大 2 次），
-          不碰收尾段移动路程（8% CV 的真正来源）。换掉它**不会**收窄分布。
-        * 废除风险：极端几何下 ``_probe_options`` 取空（找不到能缩域的补测点），动态
-          逼近独立兜底会漏检。故保留网格兜底——它是鲁棒性/整洁度项，不是稳定性杠杆。
-        **否决废掉**。
-        """
+        """网格兜底清除：可行域三角格点遍历，最后的安全网。"""
         self.grid_fallback_count += 1
         clear_by_oriented_triangular_cover(
             self.robot,
@@ -1860,10 +1411,6 @@ class Problem4CaseResult:
     finish_shared_remeasure_count: float
     directional_constraint_count: float
     directional_probe_reorder_count: float
-    weak_unknown_marked_count: float
-    weak_unknown_survey_skip_count: float
-    weak_unknown_final_probe_count: float
-    weak_unknown_recovered_count: float
 
 
 def run_problem4_case(
@@ -1872,11 +1419,6 @@ def run_problem4_case(
     directional_probability: float = 0.5,
     force_mixed: bool = True,
     survey_detected_channels: bool = True,
-    dynamic_survey_route: bool = True,
-    weak_unknown_pruning_enabled: bool = False,
-    weak_unknown_min_no_signal_points: int | None = None,
-    weak_unknown_min_angle_coverage_deg: float | None = None,
-    outer_skip_mode: str | None = None,
     route_end_at_origin: bool | None = None,
     source_count: int | None = None,
 ) -> Problem4CaseResult:
@@ -1902,11 +1444,6 @@ def run_problem4_case(
         sources=sources,
         directional_probability=directional_probability,
         survey_detected_channels=survey_detected_channels,
-        dynamic_survey_route=dynamic_survey_route,
-        weak_unknown_pruning_enabled=weak_unknown_pruning_enabled,
-        weak_unknown_min_no_signal_points=weak_unknown_min_no_signal_points,
-        weak_unknown_min_angle_coverage_deg=weak_unknown_min_angle_coverage_deg,
-        outer_skip_mode=outer_skip_mode,
         route_end_at_origin=route_end_at_origin,
     )
 
@@ -1918,11 +1455,6 @@ def _evaluate_case(
     sources: list[MixedSource],
     directional_probability: float,
     survey_detected_channels: bool = True,
-    dynamic_survey_route: bool = True,
-    weak_unknown_pruning_enabled: bool = False,
-    weak_unknown_min_no_signal_points: int | None = None,
-    weak_unknown_min_angle_coverage_deg: float | None = None,
-    outer_skip_mode: str | None = None,
     route_end_at_origin: bool | None = None,
 ) -> Problem4CaseResult:
     """在本地仿真器上跑一个给定场景，并做真值校验（漏检、定向判定假阳性）。"""
@@ -1930,11 +1462,6 @@ def _evaluate_case(
     strategy = Problem4Strategy(
         simulator,
         survey_detected_channels=survey_detected_channels,
-        dynamic_survey_route=dynamic_survey_route,
-        weak_unknown_pruning_enabled=weak_unknown_pruning_enabled,
-        weak_unknown_min_no_signal_points=weak_unknown_min_no_signal_points,
-        weak_unknown_min_angle_coverage_deg=weak_unknown_min_angle_coverage_deg,
-        outer_skip_mode=outer_skip_mode,
         route_end_at_origin=route_end_at_origin,
     )
     summary = strategy.run()
@@ -1999,10 +1526,6 @@ def _evaluate_case(
         finish_shared_remeasure_count=float(stats["finish_shared_remeasures"]),
         directional_constraint_count=float(stats["directional_constraints"]),
         directional_probe_reorder_count=float(stats["directional_probe_reorders"]),
-        weak_unknown_marked_count=float(stats["weak_unknown_marked"]),
-        weak_unknown_survey_skip_count=float(stats["weak_unknown_survey_skips"]),
-        weak_unknown_final_probe_count=float(stats["weak_unknown_final_probes"]),
-        weak_unknown_recovered_count=float(stats["weak_unknown_recovered"]),
     )
 
 
@@ -2011,10 +1534,6 @@ def summarize_problem4(
     random_state: int,
     directional_probability: float,
     survey_detected_channels: bool,
-    dynamic_survey_route: bool = True,
-    weak_unknown_pruning_enabled: bool = False,
-    weak_unknown_min_no_signal_points: int | None = None,
-    weak_unknown_min_angle_coverage_deg: float | None = None,
     route_end_at_origin: bool = Problem4Strategy.ROUTE_END_AT_ORIGIN,
 ) -> dict[str, object]:
     totals = np.array([result.total_time_s for result in results], dtype=float)
@@ -2037,18 +1556,6 @@ def summarize_problem4(
         "case_names": [result.case_name for result in results],
         "directional_probability": directional_probability,
         "survey_detected_channels": survey_detected_channels,
-        "dynamic_survey_route": dynamic_survey_route,
-        "weak_unknown_pruning_enabled": weak_unknown_pruning_enabled,
-        "weak_unknown_min_no_signal_points": (
-            Problem4Strategy.WEAK_UNKNOWN_MIN_NO_SIGNAL_POINTS
-            if weak_unknown_min_no_signal_points is None
-            else int(weak_unknown_min_no_signal_points)
-        ),
-        "weak_unknown_min_angle_coverage_deg": (
-            Problem4Strategy.WEAK_UNKNOWN_MIN_ANGLE_COVERAGE_DEG
-            if weak_unknown_min_angle_coverage_deg is None
-            else float(weak_unknown_min_angle_coverage_deg)
-        ),
         "route_end_at_origin": route_end_at_origin,
         "survey_station_count": results[0].survey_station_count,
         "inner_dodecagon_radius_m": INNER_DODECAGON_RADIUS_M,
@@ -2150,18 +1657,6 @@ def summarize_problem4(
         "mean_directional_probe_reorder_count": float(
             np.mean([result.directional_probe_reorder_count for result in results])
         ),
-        "mean_weak_unknown_marked_count": float(
-            np.mean([result.weak_unknown_marked_count for result in results])
-        ),
-        "mean_weak_unknown_survey_skip_count": float(
-            np.mean([result.weak_unknown_survey_skip_count for result in results])
-        ),
-        "mean_weak_unknown_final_probe_count": float(
-            np.mean([result.weak_unknown_final_probe_count for result in results])
-        ),
-        "mean_weak_unknown_recovered_count": float(
-            np.mean([result.weak_unknown_recovered_count for result in results])
-        ),
         "assumptions": {
             "source_position": "半径为 1800 m 的圆域内按面积均匀、相互独立",
             "receive_radius_m": "在 [1000, 1500] 上独立均匀",
@@ -2169,24 +1664,6 @@ def summarize_problem4(
             "emission_direction": "在 [0, 2*pi) 上独立均匀",
         },
     }
-
-
-def write_problem4_results(
-    results: list[Problem4CaseResult],
-    summary: dict[str, object],
-    output_prefix: Path,
-) -> None:
-    output_prefix.parent.mkdir(parents=True, exist_ok=True)
-    with output_prefix.with_suffix(".csv").open(
-        "w", newline="", encoding="utf-8-sig"
-    ) as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(asdict(results[0])))
-        writer.writeheader()
-        for result in results:
-            writer.writerow(asdict(result))
-    output_prefix.with_suffix(".json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
 
 
 def resolve_random_state(random_state: int | None) -> int:
@@ -2219,36 +1696,9 @@ def parse_args() -> argparse.Namespace:
         help="关闭巡检途中对已发现频道的顺路补测",
     )
     parser.add_argument(
-        "--static-survey-route",
-        action="store_true",
-        help="关闭清除插入后的剩余巡检点动态重排（用于配对基线）",
-    )
-    parser.add_argument(
-        "--enable-weak-unknown-pruning",
-        action="store_true",
-        help="启用实验性弱空频道剪枝；该选项不提供确定性无遗漏保证",
-    )
-    parser.add_argument(
-        "--weak-unknown-min-no-signal",
-        type=int,
-        default=Problem4Strategy.WEAK_UNKNOWN_MIN_NO_SIGNAL_POINTS,
-        help="弱空频道判定所需的最少 no_signal 不同测点数",
-    )
-    parser.add_argument(
-        "--weak-unknown-min-coverage",
-        type=float,
-        default=Problem4Strategy.WEAK_UNKNOWN_MIN_ANGLE_COVERAGE_DEG,
-        help="弱空频道判定所需的最小方位覆盖角度（度）",
-    )
-    parser.add_argument(
         "--no-route-end-at-origin",
         action="store_true",
         help="收尾 TSP 不把最后节点到原点的距离计入代价",
-    )
-    parser.add_argument(
-        "--output-prefix",
-        type=Path,
-        default=Path(_HERE) / "outputs/tables/problem4_directional_local",
     )
     return parser.parse_args()
 
@@ -2276,10 +1726,6 @@ def main() -> int:
             directional_probability=args.directional_probability,
             force_mixed=not args.allow_pure,
             survey_detected_channels=survey_detected_channels,
-            dynamic_survey_route=not args.static_survey_route,
-            weak_unknown_pruning_enabled=args.enable_weak_unknown_pruning,
-            weak_unknown_min_no_signal_points=args.weak_unknown_min_no_signal,
-            weak_unknown_min_angle_coverage_deg=args.weak_unknown_min_coverage,
             route_end_at_origin=not args.no_route_end_at_origin,
             source_count=args.source_count,
         )
@@ -2290,13 +1736,8 @@ def main() -> int:
         random_state=random_state,
         directional_probability=args.directional_probability,
         survey_detected_channels=survey_detected_channels,
-        dynamic_survey_route=not args.static_survey_route,
-        weak_unknown_pruning_enabled=args.enable_weak_unknown_pruning,
-        weak_unknown_min_no_signal_points=args.weak_unknown_min_no_signal,
-        weak_unknown_min_angle_coverage_deg=args.weak_unknown_min_coverage,
         route_end_at_origin=not args.no_route_end_at_origin,
     )
-    # write_problem4_results(results, summary, args.output_prefix)
 
     # 逐案例明细（每个案例的单源平均定位清除时间等）
     for result in results:

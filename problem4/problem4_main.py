@@ -35,7 +35,7 @@ from client import (  # noqa: E402
     RobotClient,
     TransportError,
 )
-from problem4_directional_simulation import Problem4Strategy  # noqa: E402
+from problem4_strategy import Problem4Strategy  # noqa: E402
 
 # --------------------------------------------------------------------------- #
 # 运行参数（与 problem3 一致，直接改这里即可）
@@ -102,7 +102,6 @@ def main() -> None:
         f"{summary['survey_planned_station_count']} 个"
         "（圆心 + 内外两圈各 12 点）"
     )
-    print(f"巡检-清除联合滚动调度：{summary['dynamic_survey_route']}")
     print(f"干扰源：检测到 {measured} 个，已清除 {cleared} 个")
     directional = list(summary["confirmed_directional_channels"])
     others = list(summary["not_confirmed_directional_channels"])
