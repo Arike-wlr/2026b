@@ -481,6 +481,14 @@ def triangular_lattice_stations(
     """备选巡检方案：平移的等边三角格点（边长 < 1000 m）。
 
     只保留与半径 1800 m 目标圆相交的三角形所用到的顶点，比"大包围圆内所有格点"少很多。
+
+    注意它**只是备选**：边长 999 m 时确实满足 (G,e) 认证（实测空隙 178.581° ≤ 180°，
+    即对任意位置、任意发射方向都必被检出——比"覆盖半径 s/√3 = 577 m < 1000 m"这个
+    纯距离论证更强），且点数恰好同为 25；但它的巡检路线是 **28171 m**，比同心双重
+    十二边形的 **17831 m** 多 58%（蛇形横穿大矩形 vs 沿圆环绕行）。行进占策略总时间
+    约 70%，多走 10340 m ⇒ 每例多约 2068 s。故巡检点仍用同心十二边形，
+    三角格点的正确用途是清除兜底（见 ``clear_by_oriented_triangular_cover``，
+    边长 ``COVER_LATTICE_SIDE_M ≈ 34.6 m``，保证可行域内任一点 20 m 内必有格点）。
     """
     if not 0.0 < side_m < MIN_RECEIVE_RADIUS:
         raise ValueError("三角格点边长必须落在 (0, 1000)")
@@ -1154,6 +1162,10 @@ class Problem4Strategy:
 
         while True:
             self.survey_visited_station_count += 1
+            # 已清除频道与已剪枝频道**永不**被复测：``_unresolved()`` 只含"从未检出"
+            # 的频道（已剪枝的会被排除），而下面这条只从 ``detected - cleared`` 里补，
+            # 再经 ``_needs_free_survey_measurement``（对 cleared 直接返回 False）。
+            # 实测（4 例）巡检期间触碰已清除/已剪枝频道的次数均为 0。
             channels = self._unresolved()
             if self.weak_unknown_pruning_enabled:
                 self.stats["weak_unknown_survey_skips"] += len(

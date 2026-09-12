@@ -91,6 +91,29 @@ def line_intersection(p1, u1, p2, u2):
     return p1 + t[..., None] * u1
 
 
+def region_bounded(theta1, theta2, delta, eps):
+    """两个 ±eps 扇形交集是否有界：4 条外法线角度需张满整圈（最大间隔 < pi）。
+
+    theta1、delta、eps 为弧度标量，theta2 为弧度数组 (N,)；返回 (N,) bool。
+    外法线：cross(u, P-S)>=0 取右法线 (u_y,-u_x)，<=0 取左法线 (-u_y,u_x)，
+    对应角度分别为 angle(u)-90° 与 angle(u)+90°。
+    """
+    angles = np.stack(
+        [
+            np.full_like(theta2, theta1) - eps - math.pi / 2,
+            np.full_like(theta2, theta1) + eps + math.pi / 2,
+            theta2 + delta - eps - math.pi / 2,
+            theta2 + delta + eps + math.pi / 2,
+        ],
+        axis=1,
+    )                                   # (N,4)
+    angles = np.sort(np.mod(angles, 2 * math.pi), axis=1)
+    gaps = np.diff(
+        np.concatenate([angles, angles[:, :1] + 2 * math.pi], axis=1), axis=1
+    )
+    return gaps.max(axis=1) < math.pi - 1e-9
+
+
 def region_diameters(S1v, theta1, S2v, G, eps_deg):
     """批量计算 (S1,theta1) 与 (S2,G) 两点交会定位区域的直径（含 S2 侧 ±1° 最坏情况）。
 
@@ -144,8 +167,10 @@ def region_diameters(S1v, theta1, S2v, G, eps_deg):
             dist = np.sqrt((diff ** 2).sum(axis=-1))      # (N,6,6)
             pair_mask = valid[:, :, None] & valid[:, None, :]
             diam = np.where(pair_mask, dist, 0.0).max(axis=(1, 2))
-            # 顶点少于 3 个说明区域无界（两条近平行边界之间），视为定位失效
-            diam = np.where(valid.sum(axis=1) >= 3, diam, np.inf)
+            # 区域无界（两组边界近平行）或顶点不足 3 个 -> 视为定位失效
+            ok = region_bounded(math.radians(theta1), theta2, delta2, eps) \
+                & (valid.sum(axis=1) >= 3)
+            diam = np.where(ok, diam, np.inf)
 
         best = np.maximum(best, diam)
 
@@ -153,13 +178,17 @@ def region_diameters(S1v, theta1, S2v, G, eps_deg):
 
 
 def region_vertices_single(S1v, theta1, S2v, Gv, eps_deg):
-    """单个 (S2,G) 的定位区域顶点（按凸包顺序返回），用于作图。"""
+    """单个 (S2,G) 的定位区域顶点（按凸包顺序返回），用于作图。
+    区域无界或退化时返回 []。"""
     eps = math.radians(eps_deg)
     u1m = dir_vec(math.radians(theta1) - eps)
     u1p = dir_vec(math.radians(theta1) + eps)
     theta2 = math.atan2(Gv[1] - S2v[1], Gv[0] - S2v[0])
     u2m = dir_vec(theta2 - eps)
     u2p = dir_vec(theta2 + eps)
+
+    if not region_bounded(math.radians(theta1), np.array([theta2]), 0.0, eps)[0]:
+        return []
 
     candidates = [
         line_intersection(S1v, u1m, S2v, u2m),
