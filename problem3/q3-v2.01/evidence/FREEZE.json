@@ -1,0 +1,35 @@
+{
+  "policy": "SeedRouteContinuous",
+  "development_experiment": "dev100c",
+  "development_cases": 100,
+  "development_mean": 226.4009756769653,
+  "frozen_utc": "2026-09-12T13:48:11.452351+00:00",
+  "holdout": {
+    "seed": 2026096200,
+    "cases": 300,
+    "error": "legacy"
+  },
+  "noise": {
+    "seed": 2026097200,
+    "cases": 100,
+    "error": "independent"
+  },
+  "stress": {
+    "seed": 2026098200,
+    "cases_per_scenario": 20
+  },
+  "selection_rule": "Complete 100-case development comparison; new holdout not inspected before freezing.",
+  "hashes": {
+    "benchmark.py": "f2bc2e607c47f576bb856b2befc67438816a0e27efbe2750303981dc2926e46f",
+    "coverage_exchange.py": "85710213db96b85c8987f0c0667e4282b5a2abc08a7be5ba179176a55a809d93",
+    "diagnose.py": "4915548c7325f3182b0bf321c55778e0e711cc633c6c886bb9494d7c6176888b",
+    "freeze_and_package.py": "408cda329d21e3de7277a7d7f6903f3bf82c5c1ddbb50342769916fab23a1004",
+    "prepare.py": "ecd7ed6e244a5b881ce33377faef32000bf4f7131fd932e23ed8c8efcde6f246",
+    "round1_variants.py": "62d6c83354801a6106a671afca47d741b06ff91548cce8d131cfdb011ff8f160",
+    "routing.py": "5e8005e6cc21f4a403fa47a16062f2456d460c6fd1d128b14096905bcb7a1072",
+    "scenario_route.py": "34622307c39574143120b328b1cc92022ef1ddfdc78c4a2b32296b2ea619f832",
+    "simulator.py": "bed8fe36dd88a9d7a88648353f1288bf078f738bdd62d41b525b4c04d817d5bc",
+    "validate_package.py": "5e490d4808059d70aa783542f6fe6985d324a6167eebc3d10fad6799775c473f",
+    "variants.py": "feed48defbdc443eda88024a0454594605b242e63ffd051bf84a6b7ee594b90b"
+  }
+}

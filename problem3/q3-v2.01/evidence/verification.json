@@ -1,0 +1,53 @@
+{
+  "all_passed": true,
+  "policy": "SeedRouteContinuous",
+  "checks": [
+    {
+      "check": "full_action_parity_and_geometry_audit",
+      "seed": 1405468406,
+      "passed": true,
+      "seconds_per_source": 248.11044140187147
+    },
+    {
+      "check": "full_action_parity_and_geometry_audit",
+      "seed": 1405468407,
+      "passed": true,
+      "seconds_per_source": 238.9255518103851
+    },
+    {
+      "check": "full_action_parity_and_geometry_audit",
+      "seed": 1405468436,
+      "passed": true,
+      "seconds_per_source": 259.021082893807
+    },
+    {
+      "check": "full_action_parity_and_geometry_audit",
+      "seed": 1405468467,
+      "passed": true,
+      "seconds_per_source": 187.50980756708364
+    },
+    {
+      "check": "full_action_parity_and_geometry_audit",
+      "seed": 1405468504,
+      "passed": true,
+      "seconds_per_source": 201.19151746740343
+    },
+    {
+      "check": "q3-v1.99_unchanged",
+      "passed": true
+    },
+    {
+      "check": "q3-v2.00_unchanged",
+      "passed": true
+    }
+  ],
+  "delivery_hashes": {
+    "problem3_geometry.py": "a28e24da20bad9a64005bb58edc587ee5cf2f4d9872f22033bb117076d334d01",
+    "problem3_legacy.py": "061938f468058672530791a28bce05ef92898cb495fea95ef28b872bf38eec3a",
+    "problem3_main.py": "4c458613c81936286ee25b76790f01df7f3cf7110be7aad385c383929155dbe2",
+    "problem3_routing.py": "5e8005e6cc21f4a403fa47a16062f2456d460c6fd1d128b14096905bcb7a1072",
+    "problem3_strategy.py": "c661f1df5726a715f5a0c6471d102e14c42932764a8a0e49662d871360fd96df",
+    "problem3_v200.py": "2ca5bf557698e4ecd52baf7507faab3e5531bd3d2712db1b05388d6c2ec8c329",
+    "simulator.py": "bed8fe36dd88a9d7a88648353f1288bf078f738bdd62d41b525b4c04d817d5bc"
+  }
+}

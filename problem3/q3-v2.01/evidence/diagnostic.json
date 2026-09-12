@@ -1,0 +1,173 @@
+{
+  "cases": [
+    {
+      "seed": 1405468406,
+      "n": 10,
+      "actual_s_per_source": 178.13801757057183,
+      "measurement_only_detour_s": 7.158920197453844,
+      "reordering_remaining_stops_s": 5.05571578888499,
+      "perfect_information_given_chosen_search_sites_s": 166.54539678642064,
+      "probing": 5,
+      "searching": 6
+    },
+    {
+      "seed": 1405468407,
+      "n": 12,
+      "actual_s_per_source": 188.4989681470884,
+      "measurement_only_detour_s": 4.019354684959611,
+      "reordering_remaining_stops_s": -0.4364822654831793,
+      "perfect_information_given_chosen_search_sites_s": 184.9137234122867,
+      "probing": 9,
+      "searching": 6
+    },
+    {
+      "seed": 1405468408,
+      "n": 16,
+      "actual_s_per_source": 184.80793747809778,
+      "measurement_only_detour_s": 5.941092336947099,
+      "reordering_remaining_stops_s": 17.584268060811315,
+      "perfect_information_given_chosen_search_sites_s": 160.85377081229834,
+      "probing": 12,
+      "searching": 6
+    },
+    {
+      "seed": 1405468409,
+      "n": 10,
+      "actual_s_per_source": 197.4905981235063,
+      "measurement_only_detour_s": 5.966302459318395,
+      "reordering_remaining_stops_s": 1.71204311270405,
+      "perfect_information_given_chosen_search_sites_s": 190.0275006506169,
+      "probing": 7,
+      "searching": 6
+    },
+    {
+      "seed": 1405468410,
+      "n": 11,
+      "actual_s_per_source": 187.51124098719848,
+      "measurement_only_detour_s": 7.585630296105592,
+      "reordering_remaining_stops_s": 15.80690056391276,
+      "perfect_information_given_chosen_search_sites_s": 164.2006650114049,
+      "probing": 9,
+      "searching": 6
+    },
+    {
+      "seed": 1405468411,
+      "n": 15,
+      "actual_s_per_source": 150.25619709018827,
+      "measurement_only_detour_s": 3.112695802109277,
+      "reordering_remaining_stops_s": 1.4508617659387042,
+      "perfect_information_given_chosen_search_sites_s": 145.8911762814285,
+      "probing": 7,
+      "searching": 6
+    },
+    {
+      "seed": 1405468412,
+      "n": 15,
+      "actual_s_per_source": 196.8996853300696,
+      "measurement_only_detour_s": 3.446914587817979,
+      "reordering_remaining_stops_s": 22.216383952912754,
+      "perfect_information_given_chosen_search_sites_s": 170.18499727821876,
+      "probing": 11,
+      "searching": 6
+    },
+    {
+      "seed": 1405468413,
+      "n": 15,
+      "actual_s_per_source": 145.47334108619052,
+      "measurement_only_detour_s": 7.496854420300806,
+      "reordering_remaining_stops_s": 11.724243951647173,
+      "perfect_information_given_chosen_search_sites_s": 125.4504196850053,
+      "probing": 6,
+      "searching": 6
+    },
+    {
+      "seed": 1405468414,
+      "n": 11,
+      "actual_s_per_source": 185.96199224566132,
+      "measurement_only_detour_s": 4.168668952014791,
+      "reordering_remaining_stops_s": 0.8700506944562221,
+      "perfect_information_given_chosen_search_sites_s": 180.8128723740825,
+      "probing": 9,
+      "searching": 6
+    },
+    {
+      "seed": 1405468415,
+      "n": 14,
+      "actual_s_per_source": 154.58862506634682,
+      "measurement_only_detour_s": 1.271926273101157,
+      "reordering_remaining_stops_s": 3.6789321454130395,
+      "perfect_information_given_chosen_search_sites_s": 149.14781847748503,
+      "probing": 4,
+      "searching": 6
+    },
+    {
+      "seed": 1405468416,
+      "n": 13,
+      "actual_s_per_source": 163.08393397394985,
+      "measurement_only_detour_s": 1.5630205020309336,
+      "reordering_remaining_stops_s": 10.508708040688418,
+      "perfect_information_given_chosen_search_sites_s": 151.08219622170148,
+      "probing": 7,
+      "searching": 6
+    },
+    {
+      "seed": 1405468417,
+      "n": 16,
+      "actual_s_per_source": 143.92254893534397,
+      "measurement_only_detour_s": 14.022394338193521,
+      "reordering_remaining_stops_s": 0.5324176178794687,
+      "perfect_information_given_chosen_search_sites_s": 128.75509452596106,
+      "probing": 10,
+      "searching": 5
+    },
+    {
+      "seed": 1405468418,
+      "n": 11,
+      "actual_s_per_source": 192.18766860949475,
+      "measurement_only_detour_s": 3.885468095464901,
+      "reordering_remaining_stops_s": 17.782324179780172,
+      "perfect_information_given_chosen_search_sites_s": 169.70220527102566,
+      "probing": 5,
+      "searching": 6
+    },
+    {
+      "seed": 1405468419,
+      "n": 10,
+      "actual_s_per_source": 204.89960754279363,
+      "measurement_only_detour_s": 1.1312025198078481,
+      "reordering_remaining_stops_s": 10.740683962214389,
+      "perfect_information_given_chosen_search_sites_s": 194.25941712948867,
+      "probing": 4,
+      "searching": 6
+    },
+    {
+      "seed": 1405468420,
+      "n": 15,
+      "actual_s_per_source": 135.06655371160033,
+      "measurement_only_detour_s": 1.7877505257145823,
+      "reordering_remaining_stops_s": 2.0071149631219303,
+      "perfect_information_given_chosen_search_sites_s": 129.72728513824492,
+      "probing": 3,
+      "searching": 6
+    },
+    {
+      "seed": 1405468421,
+      "n": 11,
+      "actual_s_per_source": 196.11941094260544,
+      "measurement_only_detour_s": 6.8236140424734915,
+      "reordering_remaining_stops_s": 17.882172659059506,
+      "perfect_information_given_chosen_search_sites_s": 170.73940547152185,
+      "probing": 6,
+      "searching": 6
+    }
+  ],
+  "mean": {
+    "actual_s_per_source": 175.3066454275442,
+    "measurement_only_detour_s": 4.961363127113365,
+    "reordering_remaining_stops_s": 8.694771199621357,
+    "perfect_information_given_chosen_search_sites_s": 161.39337153294946,
+    "probing": 7.125,
+    "searching": 5.9375
+  },
+  "warning": "Deleting measurement stops is an offline diagnostic only; neither this nor an oracle heuristic tour proves an achievable improvement or an optimal lower bound."
+}
