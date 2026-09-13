@@ -1,0 +1,23 @@
+{
+  "problem4_baseline.py": {
+    "source": "q4_21\\problem4_strategy.py",
+    "sha256": "3593c2cd0817ba77a3818bea8b0cfe8f7aa6a50a32ccbf8a204afbe9749a9386"
+  },
+  "problem3_geometry.py": {
+    "source": "q3-v1.99\\problem3_geometry.py",
+    "sha256": "a28e24da20bad9a64005bb58edc587ee5cf2f4d9872f22033bb117076d334d01"
+  },
+  "simulator.py": {
+    "source": "q3-v2.01\\simulator.py",
+    "sha256": "bed8fe36dd88a9d7a88648353f1288bf078f738bdd62d41b525b4c04d817d5bc"
+  },
+  "client.py": {
+    "source": "2026b\\client.py",
+    "sha256": "817a8d115af52cba5e2a472e5864af0c80cb4dd2b77c5ff380f1477be6088c14"
+  },
+  "problem3_strategy.py": {
+    "source": "q3-v1.99\\problem3_strategy.py",
+    "extraction": "ActionLogger only",
+    "source_sha256": "061938f468058672530791a28bce05ef92898cb495fea95ef28b872bf38eec3a"
+  }
+}

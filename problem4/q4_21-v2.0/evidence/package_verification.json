@@ -1,0 +1,8 @@
+{
+  "isolated_check": "v2.0 dependencies and 21 stations OK; no network request\n",
+  "isolated_local": "[1/3] seed=2007525743 cleared=15/15 total=6287.23s per-source=419.15s\n[2/3] seed=2007525744 cleared=10/10 total=5925.49s per-source=592.55s\n[3/3] seed=2007525745 cleared=10/10 total=5872.02s per-source=587.20s\nmean=6028.25s; mean per-source=532.97s; output=C:\\Users\\15156\\OneDrive\\Documents\\ChatGPT\\\u6570\u5b66\u5efa\u6a21\\q4-opt21\\isolated_232347\\q4_21-v2.0\\smoke\n",
+  "isolated_paired": "baseline 6372.62 535.4 None\ncandidate 6106.36 505.85 {'mean_saved_s': 266.2585904407165, 'saved_total_percent': 4.178165931881276, 'mean_saved_seconds_per_source': 29.550007858299175, 'bootstrap_mean_saved_s_ci95': [-175.44892885365152, 707.9661097350845], 'wins': 1, 'ties': 0, 'losses': 1, 'worst_regression_s': 175.44892885365152, 'best_saving_s': 707.9661097350845}\n",
+  "source_hashes_unchanged": true,
+  "original_strategy_unchanged": true,
+  "all_passed": true
+}

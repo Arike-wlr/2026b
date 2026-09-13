@@ -1,0 +1,147 @@
+{
+  "dev02": {
+    "variants": [
+      "baseline",
+      "shared",
+      "shared_unknown",
+      "route",
+      "joint",
+      "provisional",
+      "wide"
+    ],
+    "cases": 16,
+    "seed": 2007525743,
+    "workers": 4,
+    "out": "dev02",
+    "scenario": "random",
+    "noise": "legacy",
+    "route_end": false
+  },
+  "dev03": {
+    "variants": [
+      "baseline",
+      "joint",
+      "enroute",
+      "enroute600",
+      "enroute1200",
+      "enroute_once",
+      "clear_joint",
+      "clear_enroute"
+    ],
+    "cases": 24,
+    "seed": 2007525743,
+    "workers": 4,
+    "out": "dev03",
+    "scenario": "random",
+    "noise": "legacy",
+    "route_end": false
+  },
+  "dev04": {
+    "variants": [
+      "clear_enroute",
+      "phantom",
+      "rotate",
+      "rotate_phantom",
+      "clear_once"
+    ],
+    "cases": 24,
+    "seed": 2007525743,
+    "workers": 4,
+    "out": "dev04",
+    "scenario": "random",
+    "noise": "legacy",
+    "route_end": false
+  },
+  "dev100": {
+    "variants": [
+      "baseline",
+      "joint",
+      "clear_enroute",
+      "clear_once"
+    ],
+    "cases": 100,
+    "seed": 2007525743,
+    "workers": 4,
+    "out": "dev100",
+    "scenario": "random",
+    "noise": "legacy",
+    "route_end": false
+  },
+  "dev100_neighborhood": {
+    "variants": [
+      "neighborhood",
+      "neighborhood_joint"
+    ],
+    "cases": 100,
+    "seed": 2007525743,
+    "workers": 2,
+    "out": "dev100_neighborhood",
+    "scenario": "random",
+    "noise": "legacy",
+    "route_end": false
+  },
+  "holdout300": {
+    "variants": [
+      "baseline",
+      "candidate"
+    ],
+    "cases": 300,
+    "seed": 2026097200,
+    "workers": 4,
+    "out": "holdout300",
+    "scenario": "random",
+    "noise": "legacy",
+    "route_end": false
+  },
+  "stress_and_noise": [
+    [
+      "seeded100",
+      "random",
+      "seeded",
+      100,
+      2026098200
+    ],
+    [
+      "minradius",
+      "minradius",
+      "seeded",
+      12,
+      2026101000
+    ],
+    [
+      "directional",
+      "directional",
+      "seeded",
+      12,
+      2026101100
+    ],
+    [
+      "omni",
+      "omni",
+      "seeded",
+      12,
+      2026101200
+    ],
+    [
+      "boundary",
+      "boundary",
+      "seeded",
+      12,
+      2026101300
+    ],
+    [
+      "outward",
+      "outward",
+      "seeded",
+      12,
+      2026101400
+    ],
+    [
+      "cluster",
+      "cluster",
+      "seeded",
+      12,
+      2026101500
+    ]
+  ]
+}

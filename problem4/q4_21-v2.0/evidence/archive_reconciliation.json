@@ -1,0 +1,66 @@
+{
+  "default_matches": 90,
+  "archived_flag_reruns": [
+    {
+      "seed": 2007525748,
+      "archived_s": 5698.26803866205,
+      "rerun_with_archived_flag_s": 5698.26803866205,
+      "default_false_s": 5613.26803866205
+    },
+    {
+      "seed": 2007525774,
+      "archived_s": 6508.891311631028,
+      "rerun_with_archived_flag_s": 6508.891311631028,
+      "default_false_s": 6574.845755765247
+    },
+    {
+      "seed": 2007525775,
+      "archived_s": 6702.636460865417,
+      "rerun_with_archived_flag_s": 6702.636460865417,
+      "default_false_s": 6665.581285877783
+    },
+    {
+      "seed": 2007525790,
+      "archived_s": 4930.540717593786,
+      "rerun_with_archived_flag_s": 4930.540717593786,
+      "default_false_s": 5075.6412445603055
+    },
+    {
+      "seed": 2007525805,
+      "archived_s": 5150.897938098414,
+      "rerun_with_archived_flag_s": 5150.897938098414,
+      "default_false_s": 5135.928591532283
+    },
+    {
+      "seed": 2007525808,
+      "archived_s": 6185.43732857906,
+      "rerun_with_archived_flag_s": 6185.43732857906,
+      "default_false_s": 6072.141636760076
+    },
+    {
+      "seed": 2007525822,
+      "archived_s": 5977.2096978217805,
+      "rerun_with_archived_flag_s": 5977.2096978217805,
+      "default_false_s": 5900.997750338818
+    },
+    {
+      "seed": 2007525825,
+      "archived_s": 5253.173724095633,
+      "rerun_with_archived_flag_s": 5253.173724095633,
+      "default_false_s": 5252.159864019754
+    },
+    {
+      "seed": 2007525829,
+      "archived_s": 5604.684463369621,
+      "rerun_with_archived_flag_s": 5604.684463369621,
+      "default_false_s": 5519.684463369621
+    },
+    {
+      "seed": 2007525842,
+      "archived_s": 6959.398288743021,
+      "rerun_with_archived_flag_s": 6959.398288743021,
+      "default_false_s": 6728.492278465657
+    }
+  ],
+  "archived_total_times_reconciled": true
+}

@@ -1,0 +1,291 @@
+{
+  "cases": [
+    {
+      "seed": 2026099100,
+      "scenario": "random",
+      "noise": "seeded",
+      "actions": 293,
+      "containment_checks": 36,
+      "max_halfplane_residual_m": 0.0,
+      "replay_residual_s": 0.0,
+      "total_time_s": 6256.535570429231,
+      "source_count": 10,
+      "cleared": 10
+    },
+    {
+      "seed": 2026099101,
+      "scenario": "random",
+      "noise": "positive",
+      "actions": 253,
+      "containment_checks": 88,
+      "max_halfplane_residual_m": 2.262368070660159e-11,
+      "replay_residual_s": 0.0,
+      "total_time_s": 6152.971478662715,
+      "source_count": 16,
+      "cleared": 16
+    },
+    {
+      "seed": 2026099102,
+      "scenario": "random",
+      "noise": "negative",
+      "actions": 319,
+      "containment_checks": 53,
+      "max_halfplane_residual_m": 0.0,
+      "replay_residual_s": 0.0,
+      "total_time_s": 6323.955801732746,
+      "source_count": 11,
+      "cleared": 11
+    },
+    {
+      "seed": 2026099110,
+      "scenario": "minradius",
+      "noise": "seeded",
+      "actions": 319,
+      "containment_checks": 44,
+      "max_halfplane_residual_m": 0.0,
+      "replay_residual_s": 0.0,
+      "total_time_s": 6152.21826827563,
+      "source_count": 10,
+      "cleared": 10
+    },
+    {
+      "seed": 2026099111,
+      "scenario": "minradius",
+      "noise": "positive",
+      "actions": 225,
+      "containment_checks": 46,
+      "max_halfplane_residual_m": 3.115019353572279e-11,
+      "replay_residual_s": 0.0,
+      "total_time_s": 5726.243417384397,
+      "source_count": 14,
+      "cleared": 14
+    },
+    {
+      "seed": 2026099112,
+      "scenario": "minradius",
+      "noise": "negative",
+      "actions": 280,
+      "containment_checks": 82,
+      "max_halfplane_residual_m": 2.887645678129047e-11,
+      "replay_residual_s": 0.0,
+      "total_time_s": 6493.740482832283,
+      "source_count": 16,
+      "cleared": 16
+    },
+    {
+      "seed": 2026099120,
+      "scenario": "directional",
+      "noise": "seeded",
+      "actions": 250,
+      "containment_checks": 87,
+      "max_halfplane_residual_m": 0.0,
+      "replay_residual_s": 0.0,
+      "total_time_s": 6249.158224440946,
+      "source_count": 15,
+      "cleared": 15
+    },
+    {
+      "seed": 2026099121,
+      "scenario": "directional",
+      "noise": "positive",
+      "actions": 304,
+      "containment_checks": 65,
+      "max_halfplane_residual_m": 1.7394086171407253e-11,
+      "replay_residual_s": 0.0,
+      "total_time_s": 6916.82878098113,
+      "source_count": 14,
+      "cleared": 14
+    },
+    {
+      "seed": 2026099122,
+      "scenario": "directional",
+      "noise": "negative",
+      "actions": 338,
+      "containment_checks": 34,
+      "max_halfplane_residual_m": 0.0,
+      "replay_residual_s": 0.0,
+      "total_time_s": 6898.121696881479,
+      "source_count": 10,
+      "cleared": 10
+    },
+    {
+      "seed": 2026099130,
+      "scenario": "omni",
+      "noise": "seeded",
+      "actions": 136,
+      "containment_checks": 61,
+      "max_halfplane_residual_m": 0.0,
+      "replay_residual_s": 0.0,
+      "total_time_s": 3522.949452079612,
+      "source_count": 16,
+      "cleared": 16
+    },
+    {
+      "seed": 2026099131,
+      "scenario": "omni",
+      "noise": "positive",
+      "actions": 195,
+      "containment_checks": 41,
+      "max_halfplane_residual_m": 9.777068044058979e-12,
+      "replay_residual_s": 0.0,
+      "total_time_s": 5184.650110266578,
+      "source_count": 15,
+      "cleared": 15
+    },
+    {
+      "seed": 2026099132,
+      "scenario": "omni",
+      "noise": "negative",
+      "actions": 257,
+      "containment_checks": 46,
+      "max_halfplane_residual_m": 0.0,
+      "replay_residual_s": 0.0,
+      "total_time_s": 5421.623725041594,
+      "source_count": 13,
+      "cleared": 13
+    },
+    {
+      "seed": 2026099140,
+      "scenario": "boundary",
+      "noise": "seeded",
+      "actions": 338,
+      "containment_checks": 83,
+      "max_halfplane_residual_m": 0.0,
+      "replay_residual_s": 0.0,
+      "total_time_s": 6678.651569109871,
+      "source_count": 15,
+      "cleared": 15
+    },
+    {
+      "seed": 2026099141,
+      "scenario": "boundary",
+      "noise": "positive",
+      "actions": 317,
+      "containment_checks": 54,
+      "max_halfplane_residual_m": 1.7962520360015333e-11,
+      "replay_residual_s": 0.0,
+      "total_time_s": 5537.692885711441,
+      "source_count": 11,
+      "cleared": 11
+    },
+    {
+      "seed": 2026099142,
+      "scenario": "boundary",
+      "noise": "negative",
+      "actions": 318,
+      "containment_checks": 66,
+      "max_halfplane_residual_m": 1.2732925824820995e-11,
+      "replay_residual_s": 0.0,
+      "total_time_s": 5945.217808250689,
+      "source_count": 12,
+      "cleared": 12
+    },
+    {
+      "seed": 2026099150,
+      "scenario": "outward",
+      "noise": "seeded",
+      "actions": 432,
+      "containment_checks": 86,
+      "max_halfplane_residual_m": 0.0,
+      "replay_residual_s": 0.0,
+      "total_time_s": 8756.535717886096,
+      "source_count": 13,
+      "cleared": 13
+    },
+    {
+      "seed": 2026099151,
+      "scenario": "outward",
+      "noise": "positive",
+      "actions": 441,
+      "containment_checks": 72,
+      "max_halfplane_residual_m": 1.4529177860822529e-10,
+      "replay_residual_s": 0.0,
+      "total_time_s": 8742.206856028666,
+      "source_count": 10,
+      "cleared": 10
+    },
+    {
+      "seed": 2026099152,
+      "scenario": "outward",
+      "noise": "negative",
+      "actions": 472,
+      "containment_checks": 111,
+      "max_halfplane_residual_m": 0.0,
+      "replay_residual_s": 0.0,
+      "total_time_s": 8967.482201063525,
+      "source_count": 14,
+      "cleared": 14
+    },
+    {
+      "seed": 2026099160,
+      "scenario": "cluster",
+      "noise": "seeded",
+      "actions": 269,
+      "containment_checks": 56,
+      "max_halfplane_residual_m": 0.0,
+      "replay_residual_s": 0.0,
+      "total_time_s": 5487.528922346565,
+      "source_count": 11,
+      "cleared": 11
+    },
+    {
+      "seed": 2026099161,
+      "scenario": "cluster",
+      "noise": "positive",
+      "actions": 249,
+      "containment_checks": 62,
+      "max_halfplane_residual_m": 0.0,
+      "replay_residual_s": 2.2737367544323206e-13,
+      "total_time_s": 5345.06139719569,
+      "source_count": 14,
+      "cleared": 14
+    },
+    {
+      "seed": 2026099162,
+      "scenario": "cluster",
+      "noise": "negative",
+      "actions": 269,
+      "containment_checks": 98,
+      "max_halfplane_residual_m": 2.625029082992114e-10,
+      "replay_residual_s": 0.0,
+      "total_time_s": 5789.170846712078,
+      "source_count": 14,
+      "cleared": 14
+    }
+  ],
+  "routing": [
+    {
+      "n": 1,
+      "heuristic_gap_m": 0.0
+    },
+    {
+      "n": 2,
+      "heuristic_gap_m": 0.0
+    },
+    {
+      "n": 3,
+      "heuristic_gap_m": 0.0
+    },
+    {
+      "n": 4,
+      "heuristic_gap_m": 0.0
+    },
+    {
+      "n": 5,
+      "heuristic_gap_m": 0.0
+    },
+    {
+      "n": 6,
+      "heuristic_gap_m": 0.0
+    },
+    {
+      "n": 7,
+      "heuristic_gap_m": 0.0
+    },
+    {
+      "n": 8,
+      "heuristic_gap_m": 0.0
+    }
+  ],
+  "all_passed": true
+}

@@ -1,0 +1,22 @@
+{
+  "utc": "2026-09-12T15:13:32.958282+00:00",
+  "selected_class": "ClearOnce",
+  "files": {
+    "client.py": "817a8d115af52cba5e2a472e5864af0c80cb4dd2b77c5ff380f1477be6088c14",
+    "dependency_provenance.json": "dae692cf80a142b1a34ffe3027bbc279a5b0e9612bdb77b65d50343b923a365e",
+    "problem3_geometry.py": "a28e24da20bad9a64005bb58edc587ee5cf2f4d9872f22033bb117076d334d01",
+    "problem3_strategy.py": "d842a797543d8a80e1f0d1e756e91d3c62b830e8179b6fa0d208c2207dcc671e",
+    "problem4_baseline.py": "3593c2cd0817ba77a3818bea8b0cfe8f7aa6a50a32ccbf8a204afbe9749a9386",
+    "problem4_main.py": "10b0a037bbaefee687712f4226294dd290a535274fb91c6890ca90734ea4f2ef",
+    "problem4_strategy.py": "543f42246a2d07a84565312e0b060d16d099d1051bb5f3669542c52cf60f51ac",
+    "requirements-research.txt": "d214f1038534a67fa206ecea64d1fe0d08e27cc421ffd976f5dace1ee0c679fa",
+    "requirements.txt": "bca412bd4d33ad8b87c5453b8b913b37303b2e44d953f037bce862bf2673808c",
+    "routing.py": "70e5421b089d80db5260b9661e98ae77cf9f2a3e3ac7f607d15fb01b56cbb498",
+    "run_local.ps1": "64abe7cb089e2079ff9ca7959f085eb33e966e0e121881bb27da5b4bff9ab14c",
+    "simulator.py": "bed8fe36dd88a9d7a88648353f1288bf078f738bdd62d41b525b4c04d817d5bc"
+  },
+  "validation_seed_start": 2026097200,
+  "validation_cases": 300,
+  "selection_data": "original 100 cases, seeds 2007525743..2007525842",
+  "status": "frozen before independent validation"
+}
